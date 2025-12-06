@@ -1,0 +1,22 @@
+# Example Configuration File
+# Copy this to config.json and customize for your setup
+
+{
+    "videoDirectory": "/path/to/your/videos",
+    "port": 3000,
+    "host": "127.0.0.1",
+    "password": "your-secure-password-here",
+    "maxRecursionDepth": 10,
+    "allowedExtensions": [
+        ".mp4",
+        ".avi",
+        ".mkv",
+        ".mov",
+        ".wmv",
+        ".flv",
+        ".webm",
+        ".m4v",
+        ".mpeg",
+        ".mpg"
+    ]
+}

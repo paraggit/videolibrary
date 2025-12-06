@@ -1,6 +1,3 @@
-# Example Configuration File
-# Copy this to config.json and customize for your setup
-
 {
     "videoDirectory": "/path/to/your/videos",
     "port": 3000,
@@ -18,5 +15,21 @@
         ".m4v",
         ".mpeg",
         ".mpg"
-    ]
+    ],
+    "allowedImageExtensions": [
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".gif",
+        ".webp",
+        ".bmp",
+        ".svg"
+    ],
+    "https": {
+        "enabled": false,
+        "port": 3443,
+        "certificatePath": "./certs/certificate.pem",
+        "privateKeyPath": "./certs/private-key.pem",
+        "redirectHttp": true
+    }
 }

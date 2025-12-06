@@ -1,12 +1,21 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; media-src 'self'; connect-src 'self'">
   <title>Video Library</title>
+
+  <!-- Privacy & Security Meta Tags -->
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; media-src 'self' blob:; connect-src 'self'; img-src 'self' data:;">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="X-DNS-Prefetch-Control" content="off">
+  <meta name="robots" content="noindex, nofollow">
+
   <link rel="stylesheet" href="styles.css">
 </head>
+
 <body>
   <!-- Login Screen -->
   <div id="login-screen" class="login-container">
@@ -36,6 +45,10 @@
         <h1>🎬 Video Library</h1>
       </div>
       <div class="header-right">
+        <button id="albums-btn" class="btn-secondary">📚 Albums</button>
+        <button id="selection-mode-btn" class="btn-secondary">☑ Select</button>
+        <button id="add-to-album-btn" class="btn-secondary" style="display: none;">➕ Add to Album</button>
+        <button id="delete-btn" class="btn-delete" style="display: none;">🗑 Delete</button>
         <button id="logout-btn" class="btn-secondary">Logout</button>
       </div>
     </header>
@@ -47,11 +60,11 @@
         <div class="search-container">
           <input type="text" id="search-input" placeholder="Search videos..." class="search-input">
         </div>
-        
+
         <div class="breadcrumb" id="breadcrumb">
           <span class="breadcrumb-item active" data-path="">Home</span>
         </div>
-        
+
         <div id="folder-list" class="folder-list">
           <div class="loading">Loading folders...</div>
         </div>
@@ -67,25 +80,24 @@
 
         <!-- Video Player -->
         <div id="video-player-container" class="video-player-container" style="display: none;">
+          <button id="close-player" class="btn-close close-player-btn">✕</button>
           <div class="player-header">
-            <h2 id="video-title">Video Title</h2>
-            <button id="close-player" class="btn-close">✕</button>
+            <h2 id="video-title"></h2>
           </div>
-          <video id="video-player" controls controlsList="nodownload">
-            Your browser does not support the video tag.
-          </video>
-          <div class="player-controls">
-            <div class="control-group">
-              <label for="playback-speed">Speed:</label>
-              <select id="playback-speed">
-                <option value="0.5">0.5x</option>
-                <option value="0.75">0.75x</option>
-                <option value="1" selected>1x</option>
-                <option value="1.25">1.25x</option>
-                <option value="1.5">1.5x</option>
-                <option value="2">2x</option>
-              </select>
-            </div>
+          <video id="video-player" controls></video>
+          <div class="video-controls">
+            <button id="prev-media-btn" class="btn-secondary" title="Previous (Left Arrow)">⏮ Previous</button>
+            <label for="playback-speed">Speed:</label>
+            <select id="playback-speed">
+              <option value="0.5">0.5x</option>
+              <option value="0.75">0.75x</option>
+              <option value="1" selected>1x</option>
+              <option value="1.25">1.25x</option>
+              <option value="1.5">1.5x</option>
+              <option value="2">2x</option>
+            </select>
+            <button id="fullscreen-btn" class="btn-secondary">⛶ Fullscreen</button>
+            <button id="next-media-btn" class="btn-secondary" title="Next (Right Arrow)">Next ⏭</button>
           </div>
         </div>
       </main>
@@ -98,6 +110,101 @@
     </footer>
   </div>
 
+  <!-- Rename Modal -->
+  <div id="rename-modal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <h3>Rename File</h3>
+      <input type="text" id="rename-input" class="modal-input" placeholder="New filename">
+      <div class="modal-actions">
+        <button id="rename-confirm" class="btn-primary">Rename</button>
+        <button id="rename-cancel" class="btn-secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Album Creation Modal -->
+  <div id="album-modal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <h3 id="album-modal-title">Create Album</h3>
+      <input type="text" id="album-name" class="modal-input" placeholder="Album name">
+      <textarea id="album-description" class="modal-textarea" placeholder="Description (optional)"></textarea>
+      <div class="modal-actions">
+        <button id="album-create" class="btn-primary">Create</button>
+        <button id="album-cancel" class="btn-secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add to Album Modal -->
+  <div id="add-to-album-modal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <h3>Add to Album</h3>
+      <div id="album-list-container"></div>
+      <div class="modal-actions">
+        <button id="add-to-album-cancel" class="btn-secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Albums View -->
+  <div id="albums-view" class="modal" style="display: none;">
+    <div class="modal-content modal-large">
+      <div class="modal-header">
+        <h2>📚 Albums</h2>
+        <button id="albums-close" class="btn-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <button id="create-album-btn" class="btn-primary">+ Create Album</button>
+        <div id="albums-list" class="albums-grid"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Album Detail View -->
+  <div id="album-detail-view" class="modal" style="display: none;">
+    <div class="modal-content modal-large">
+      <div class="modal-header">
+        <h2 id="album-detail-title"></h2>
+        <button id="album-detail-close" class="btn-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p id="album-detail-description"></p>
+        <div class="album-actions">
+          <button id="album-delete-btn" class="btn-delete">Delete Album</button>
+        </div>
+        <div id="album-videos-list" class="video-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Image Viewer Modal -->
+  <div id="image-viewer" class="modal" style="display: none;">
+    <div class="modal-content modal-large image-viewer-container">
+      <div class="modal-header">
+        <h2 id="image-title"></h2>
+        <button id="close-image-viewer" class="btn-close">✕</button>
+      </div>
+      <div class="image-viewer-content">
+        <img id="image-display" src="" alt="">
+      </div>
+      <div class="image-controls">
+        <button id="prev-image-btn" class="btn-secondary" title="Previous (Left Arrow)">⏮ Previous</button>
+        <button id="zoom-in" class="btn-secondary" title="Zoom In">🔍+</button>
+        <button id="zoom-out" class="btn-secondary" title="Zoom Out">🔍-</button>
+        <button id="zoom-reset" class="btn-secondary" title="Reset">⟲</button>
+        <button id="rotate-left" class="btn-secondary" title="Rotate Left">↶</button>
+        <button id="rotate-right" class="btn-secondary" title="Rotate Right">↷</button>
+        <button id="fullscreen-image" class="btn-secondary" title="Fullscreen">⛶</button>
+        <button id="next-image-btn" class="btn-secondary" title="Next (Right Arrow)">Next ⏭</button>
+      </div>
+      <div class="image-info">
+        <span id="image-size"></span>
+        <span id="image-modified"></span>
+      </div>
+    </div>
+  </div>
+
   <script src="app.js"></script>
 </body>
+
 </html>

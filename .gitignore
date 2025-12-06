@@ -3,3 +3,10 @@ config.json
 .DS_Store
 *.log
 .env
+
+# SSL Certificates (never commit private keys!)
+certs/
+*.pem
+*.key
+*.crt
+*.csr

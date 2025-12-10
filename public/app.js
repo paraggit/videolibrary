@@ -44,6 +44,8 @@ let searchTimeout = null;
 let isSearchMode = false;
 let selectionMode = false;
 let selectedFiles = new Set();
+let currentVideoPath = '';
+let currentVideoName = '';
 
 // DOM elements
 const loginScreen = document.getElementById('login-screen');
@@ -61,6 +63,7 @@ const videoTitle = document.getElementById('video-title');
 const closePlayer = document.getElementById('close-player');
 const playbackSpeed = document.getElementById('playback-speed');
 const fullscreenBtn = document.getElementById('fullscreen-btn');
+const deleteVideoBtn = document.getElementById('delete-video-btn');
 const selectionModeBtn = document.getElementById('selection-mode-btn');
 const addToAlbumBtn = document.getElementById('add-to-album-btn');
 const deleteBtn = document.getElementById('delete-btn');
@@ -150,6 +153,7 @@ function init() {
     closePlayer.addEventListener('click', closeVideoPlayer);
     playbackSpeed.addEventListener('change', handleSpeedChange);
     fullscreenBtn.addEventListener('click', toggleFullscreen);
+    deleteVideoBtn.addEventListener('click', deleteCurrentVideo);
     selectionModeBtn.addEventListener('click', toggleSelectionMode);
     deleteBtn.addEventListener('click', deleteSelectedFiles);
     document.addEventListener('fullscreenchange', updateFullscreenButton);
@@ -405,6 +409,10 @@ Path: ${file.path}`;
 function playVideo(path, name) {
     // Find and store current index
     currentMediaIndex = currentMediaList.findIndex(f => f.path === path);
+
+    // Store current video info for delete functionality
+    currentVideoPath = path;
+    currentVideoName = name;
 
     videoTitle.textContent = name;
     videoPlayer.src = `/api/video?path=${encodeURIComponent(path)}`;
@@ -764,6 +772,73 @@ async function deleteSelectedFiles() {
         alert('Failed to delete files. Please try again.');
     } finally {
         deleteBtn.disabled = false;
+    }
+}
+
+// Delete current video from video player
+async function deleteCurrentVideo() {
+    if (!currentVideoPath || !currentVideoName) {
+        alert('No video is currently playing');
+        return;
+    }
+
+    // Confirmation dialog
+    if (!confirm(`Are you sure you want to permanently delete "${currentVideoName}"?\n\nThis action cannot be undone.`)) {
+        return;
+    }
+
+    statusMessage.textContent = `Deleting ${currentVideoName}...`;
+    deleteVideoBtn.disabled = true;
+
+    try {
+        const response = await fetch('/api/video', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ path: currentVideoPath })
+        });
+
+        if (!response.ok) {
+            throw new Error('Delete failed');
+        }
+
+        const data = await response.json();
+
+        if (data.deleted > 0) {
+            statusMessage.textContent = `Deleted ${currentVideoName} successfully`;
+
+            // Close video player
+            closeVideoPlayer();
+
+            // Check if there's a next video to play
+            if (currentMediaIndex < currentMediaList.length - 1) {
+                // Play next video
+                const nextMedia = currentMediaList[currentMediaIndex + 1];
+                if (nextMedia) {
+                    if (nextMedia.type === 'video') {
+                        playVideo(nextMedia.path, nextMedia.name);
+                    } else if (nextMedia.type === 'image') {
+                        viewImage(nextMedia.path, nextMedia.name, nextMedia.size, nextMedia.modified);
+                    }
+                }
+            }
+
+            // Reload current directory
+            if (isSearchMode) {
+                performSearch(searchInput.value);
+            } else {
+                loadDirectory(currentPath);
+            }
+        } else {
+            alert('Failed to delete video');
+        }
+
+    } catch (error) {
+        console.error('Delete error:', error);
+        statusMessage.textContent = 'Delete failed';
+        alert('Failed to delete video. Please try again.');
+    } finally {
+        deleteVideoBtn.disabled = false;
     }
 }
 

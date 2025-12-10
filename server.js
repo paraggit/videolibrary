@@ -454,10 +454,10 @@ app.delete('/api/video', requireAuth, async (req, res) => {
       try {
         const fullPath = sanitizePath(filePath);
 
-        // Verify file exists and is a video
+        // Verify file exists
         const stats = await fs.promises.stat(fullPath);
-        if (!stats.isFile() || !isVideoFile(fullPath)) {
-          results.failed.push({ path: filePath, error: 'Invalid video file' });
+        if (!stats.isFile()) {
+          results.failed.push({ path: filePath, error: 'Invalid file' });
           continue;
         }
 

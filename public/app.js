@@ -124,6 +124,23 @@ const nextMediaBtn = document.getElementById('next-media-btn');
 const prevImageBtn = document.getElementById('prev-image-btn');
 const nextImageBtn = document.getElementById('next-image-btn');
 
+// Folder and upload DOM elements
+const createFolderBtn = document.getElementById('create-folder-btn');
+const uploadFilesBtn = document.getElementById('upload-files-btn');
+const createFolderModal = document.getElementById('create-folder-modal');
+const uploadFilesModal = document.getElementById('upload-files-modal');
+const folderNameInput = document.getElementById('folder-name');
+const folderCreateBtn = document.getElementById('folder-create');
+const folderCancelBtn = document.getElementById('folder-cancel');
+const createFolderPath = document.getElementById('create-folder-path');
+const fileInput = document.getElementById('file-input');
+const uploadStartBtn = document.getElementById('upload-start');
+const uploadCancelBtn = document.getElementById('upload-cancel');
+const uploadFolderPath = document.getElementById('upload-folder-path');
+const uploadProgress = document.getElementById('upload-progress');
+const progressFill = document.getElementById('progress-fill');
+const uploadStatus = document.getElementById('upload-status');
+
 // Initialize app
 function init() {
     // Event listeners
@@ -164,6 +181,14 @@ function init() {
     nextMediaBtn.addEventListener('click', playNextMedia);
     prevImageBtn.addEventListener('click', viewPreviousImage);
     nextImageBtn.addEventListener('click', viewNextImage);
+
+    // Folder and upload event listeners
+    createFolderBtn.addEventListener('click', showCreateFolderModal);
+    uploadFilesBtn.addEventListener('click', showUploadFilesModal);
+    folderCreateBtn.addEventListener('click', createFolder);
+    folderCancelBtn.addEventListener('click', () => createFolderModal.style.display = 'none');
+    uploadStartBtn.addEventListener('click', uploadFiles);
+    uploadCancelBtn.addEventListener('click', () => uploadFilesModal.style.display = 'none');
 
     // Keyboard shortcuts
     document.addEventListener('keydown', handleKeyboard);
@@ -1220,6 +1245,123 @@ function viewNextImage() {
         playVideo(nextMedia.path, nextMedia.name);
     } else {
         viewImage(nextMedia.path, nextMedia.name, nextMedia.size, nextMedia.modified);
+    }
+}
+
+// ===== FOLDER & UPLOAD FUNCTIONALITY =====
+
+// Show create folder modal
+function showCreateFolderModal() {
+    createFolderPath.textContent = currentPath || '/';
+    folderNameInput.value = '';
+    createFolderModal.style.display = 'block';
+    folderNameInput.focus();
+}
+
+// Create folder
+async function createFolder() {
+    const folderName = folderNameInput.value.trim();
+
+    if (!folderName) {
+        alert('Please enter a folder name');
+        return;
+    }
+
+    // Validate folder name
+    if (folderName.includes('/') || folderName.includes('\\') || folderName.includes('..')) {
+        alert('Invalid folder name. Cannot contain /, \\, or ..');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/folder', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                path: currentPath,
+                name: folderName
+            })
+        });
+
+        const result = await response.json();
+
+        if (response.ok) {
+            statusMessage.textContent = `Folder "${folderName}" created successfully`;
+            createFolderModal.style.display = 'none';
+            // Refresh the folder list
+            loadFolders(currentPath);
+        } else {
+            alert(`Error: ${result.error}`);
+        }
+    } catch (error) {
+        console.error('Create folder error:', error);
+        alert('Failed to create folder');
+    }
+}
+
+// Show upload files modal
+function showUploadFilesModal() {
+    uploadFolderPath.textContent = currentPath || '/';
+    fileInput.value = '';
+    uploadProgress.style.display = 'none';
+    progressFill.style.width = '0%';
+    uploadFilesModal.style.display = 'block';
+}
+
+// Upload files
+async function uploadFiles() {
+    const files = fileInput.files;
+
+    if (!files || files.length === 0) {
+        alert('Please select files to upload');
+        return;
+    }
+
+    // Show progress
+    uploadProgress.style.display = 'block';
+    uploadStartBtn.disabled = true;
+    uploadStatus.textContent = 'Uploading...';
+
+    try {
+        const formData = new FormData();
+        formData.append('path', currentPath);
+
+        for (let i = 0; i < files.length; i++) {
+            formData.append('files', files[i]);
+        }
+
+        const response = await fetch('/api/upload', {
+            method: 'POST',
+            body: formData
+        });
+
+        const result = await response.json();
+
+        if (response.ok) {
+            progressFill.style.width = '100%';
+            uploadStatus.textContent = `Uploaded ${result.uploaded} file(s)`;
+
+            if (result.failed > 0) {
+                uploadStatus.textContent += ` (${result.failed} failed)`;
+            }
+
+            statusMessage.textContent = `Successfully uploaded ${result.uploaded} file(s)`;
+
+            // Close modal after a short delay
+            setTimeout(() => {
+                uploadFilesModal.style.display = 'none';
+                uploadStartBtn.disabled = false;
+                // Refresh the file list
+                loadVideos(currentPath);
+            }, 1500);
+        } else {
+            alert(`Error: ${result.error}`);
+            uploadStartBtn.disabled = false;
+        }
+    } catch (error) {
+        console.error('Upload error:', error);
+        alert('Failed to upload files');
+        uploadStartBtn.disabled = false;
     }
 }
 

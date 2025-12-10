@@ -517,6 +517,160 @@ app.patch('/api/video/rename', requireAuth, async (req, res) => {
   }
 });
 
+// Create folder
+app.post('/api/folder', requireAuth, async (req, res) => {
+  try {
+    const { path: parentPath, name } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ error: 'Folder name required' });
+    }
+
+    // Validate folder name (no path separators)
+    if (name.includes('/') || name.includes('\\') || name.includes('..')) {
+      return res.status(400).json({ error: 'Invalid folder name' });
+    }
+
+    // Build full path
+    const basePath = parentPath ? sanitizePath(parentPath) : config.videoDirectory;
+    const newFolderPath = path.join(basePath, name);
+
+    // Check if folder already exists
+    if (fs.existsSync(newFolderPath)) {
+      return res.status(400).json({ error: 'Folder already exists' });
+    }
+
+    // Create the folder
+    await fs.promises.mkdir(newFolderPath, { recursive: false });
+
+    res.json({
+      success: true,
+      path: path.relative(config.videoDirectory, newFolderPath)
+    });
+
+  } catch (error) {
+    console.error('Create folder error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Upload files
+app.post('/api/upload', requireAuth, async (req, res) => {
+  try {
+    const contentType = req.headers['content-type'];
+
+    if (!contentType || !contentType.includes('multipart/form-data')) {
+      return res.status(400).json({ error: 'Must be multipart/form-data' });
+    }
+
+    // Parse multipart form data manually
+    const boundary = contentType.split('boundary=')[1];
+    if (!boundary) {
+      return res.status(400).json({ error: 'No boundary found' });
+    }
+
+    let body = [];
+
+    req.on('data', chunk => {
+      body.push(chunk);
+    });
+
+    req.on('end', async () => {
+      try {
+        const buffer = Buffer.concat(body);
+        const parts = parseMultipartData(buffer, boundary);
+
+        const folderPath = parts.fields.path || '';
+        const files = parts.files || [];
+
+        if (files.length === 0) {
+          return res.status(400).json({ error: 'No files provided' });
+        }
+
+        const uploadDir = folderPath ? sanitizePath(folderPath) : config.videoDirectory;
+
+        // Verify upload directory exists
+        if (!fs.existsSync(uploadDir)) {
+          return res.status(400).json({ error: 'Upload directory does not exist' });
+        }
+
+        const results = {
+          uploaded: [],
+          failed: []
+        };
+
+        for (const file of files) {
+          try {
+            const filePath = path.join(uploadDir, file.filename);
+
+            // Write file
+            await fs.promises.writeFile(filePath, file.data);
+
+            results.uploaded.push(file.filename);
+          } catch (err) {
+            results.failed.push({ filename: file.filename, error: err.message });
+          }
+        }
+
+        res.json({
+          success: true,
+          uploaded: results.uploaded.length,
+          failed: results.failed.length,
+          details: results
+        });
+
+      } catch (error) {
+        console.error('Upload processing error:', error.message);
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+  } catch (error) {
+    console.error('Upload error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Helper function to parse multipart form data
+function parseMultipartData(buffer, boundary) {
+  const parts = { fields: {}, files: [] };
+  const boundaryStr = `--${boundary}`;
+  const lines = buffer.toString('binary').split(boundaryStr);
+
+  for (let i = 1; i < lines.length - 1; i++) {
+    const part = lines[i];
+    if (!part || part.trim() === '--') continue;
+
+    const headerEndIndex = part.indexOf('\r\n\r\n');
+    if (headerEndIndex === -1) continue;
+
+    const headers = part.substring(0, headerEndIndex);
+    const dataStart = headerEndIndex + 4;
+    const dataEnd = part.lastIndexOf('\r\n');
+    const data = part.substring(dataStart, dataEnd);
+
+    const nameMatch = headers.match(/name="([^"]+)"/);
+    if (!nameMatch) continue;
+
+    const name = nameMatch[1];
+    const filenameMatch = headers.match(/filename="([^"]+)"/);
+
+    if (filenameMatch) {
+      // This is a file
+      const filename = filenameMatch[1];
+      parts.files.push({
+        filename: filename,
+        data: Buffer.from(data, 'binary')
+      });
+    } else {
+      // This is a field
+      parts.fields[name] = data.trim();
+    }
+  }
+
+  return parts;
+}
+
 // Get all albums
 app.get('/api/albums', requireAuth, (req, res) => {
   try {

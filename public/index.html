@@ -45,6 +45,8 @@
         <h1>🎬 Video Library</h1>
       </div>
       <div class="header-right">
+        <button id="create-folder-btn" class="btn-secondary">📁 New Folder</button>
+        <button id="upload-files-btn" class="btn-secondary">📤 Upload Files</button>
         <button id="albums-btn" class="btn-secondary">📚 Albums</button>
         <button id="selection-mode-btn" class="btn-secondary">☑ Select</button>
         <button id="add-to-album-btn" class="btn-secondary" style="display: none;">➕ Add to Album</button>
@@ -118,6 +120,38 @@
       <div class="modal-actions">
         <button id="rename-confirm" class="btn-primary">Rename</button>
         <button id="rename-cancel" class="btn-secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Create Folder Modal -->
+  <div id="create-folder-modal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <h3>Create New Folder</h3>
+      <p class="modal-info">Current location: <span id="create-folder-path"></span></p>
+      <input type="text" id="folder-name" class="modal-input" placeholder="Folder Name" required>
+      <div class="modal-actions">
+        <button id="folder-create" class="btn-primary">Create</button>
+        <button id="folder-cancel" class="btn-secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Upload Files Modal -->
+  <div id="upload-files-modal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <h3>Upload Files</h3>
+      <p class="modal-info">Upload to: <span id="upload-folder-path"></span></p>
+      <input type="file" id="file-input" multiple accept="video/*,image/*" class="file-input">
+      <div id="upload-progress" style="display: none;">
+        <div class="progress-bar">
+          <div id="progress-fill" class="progress-fill"></div>
+        </div>
+        <p id="upload-status">Uploading...</p>
+      </div>
+      <div class="modal-actions">
+        <button id="upload-start" class="btn-primary">Upload</button>
+        <button id="upload-cancel" class="btn-secondary">Cancel</button>
       </div>
     </div>
   </div>

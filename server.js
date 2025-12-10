@@ -198,15 +198,32 @@ function isImageFile(filename) {
 }
 
 // Check if file is any supported media type
-function isMediaFile(filename) {
-  return isVideoFile(filename) || isImageFile(filename);
+function isMediaFile() {
+  // Accept all files now, not just video and image
+  return true;
 }
 
 // Get file type
 function getFileType(filename) {
   if (isVideoFile(filename)) return 'video';
   if (isImageFile(filename)) return 'image';
-  return 'unknown';
+
+  // Determine type based on extension for other files
+  const ext = path.extname(filename).toLowerCase();
+
+  // Document types
+  if (['.pdf', '.doc', '.docx', '.txt', '.rtf', '.odt'].includes(ext)) return 'document';
+
+  // Audio types
+  if (['.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma'].includes(ext)) return 'audio';
+
+  // Archive types
+  if (['.zip', '.rar', '.7z', '.tar', '.gz', '.bz2'].includes(ext)) return 'archive';
+
+  // Code types
+  if (['.js', '.py', '.java', '.cpp', '.c', '.html', '.css', '.json', '.xml'].includes(ext)) return 'code';
+
+  return 'file';
 }
 // Get MIME type based on file extension
 function getMimeType(filename) {
@@ -901,6 +918,39 @@ app.get('/api/video', requireAuth, async (req, res) => {
     }
   } catch (error) {
     console.error('Video streaming error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Download file endpoint
+app.get('/api/download', requireAuth, async (req, res) => {
+  try {
+    const requestedPath = req.query.path;
+    if (!requestedPath) {
+      return res.status(400).json({ error: 'Path parameter required' });
+    }
+
+    const fullPath = sanitizePath(requestedPath);
+
+    // Verify file exists
+    const stats = await fs.promises.stat(fullPath);
+    if (!stats.isFile()) {
+      return res.status(400).json({ error: 'Invalid file' });
+    }
+
+    const fileName = path.basename(fullPath);
+
+    // Set headers for download
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Length', stats.size);
+
+    // Stream the file
+    const fileStream = fs.createReadStream(fullPath);
+    fileStream.pipe(res);
+
+  } catch (error) {
+    console.error('Download error:', error.message);
     res.status(500).json({ error: error.message });
   }
 });

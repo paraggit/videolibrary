@@ -347,8 +347,9 @@ function displayVideos(files, showFolderPath = false) {
         const isSelected = selectedFiles.has(file.path);
         const selectionClass = selectionMode ? 'selection-mode' : '';
         const selectedClass = isSelected ? 'selected' : '';
-        const isImage = file.type === 'image';
-        const icon = isImage ? '🖼️' : '🎬';
+
+        // Get appropriate icon based on file type
+        const icon = getFileIcon(file.type);
 
         // Create detailed tooltip
         const tooltip = `Type: ${file.type || 'video'}
@@ -387,8 +388,11 @@ Path: ${file.path}`;
                 // Find file data for size and modified date
                 const fileData = files.find(f => f.path === path);
                 viewImage(path, name, fileData.size, fileData.modified);
-            } else {
+            } else if (type === 'video') {
                 playVideo(path, name);
+            } else {
+                // For other file types, download them
+                downloadFile(path, name);
             }
         });
     });
@@ -609,6 +613,32 @@ function formatFileSize(bytes) {
 function formatDate(dateString) {
     const date = new Date(dateString);
     return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+// Get file icon based on type
+function getFileIcon(type) {
+    const icons = {
+        'video': '🎬',
+        'image': '🖼️',
+        'audio': '🎵',
+        'document': '📄',
+        'archive': '📦',
+        'code': '💻',
+        'file': '📎'
+    };
+    return icons[type] || '📎';
+}
+
+// Download file
+function downloadFile(path, name) {
+    const downloadUrl = `/api/download?path=${encodeURIComponent(path)}`;
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    statusMessage.textContent = `Downloading: ${name}`;
 }
 
 // Selection Mode Functions

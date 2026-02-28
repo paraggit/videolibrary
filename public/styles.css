@@ -292,22 +292,26 @@ body {
   display: flex;
   gap: 5px;
   align-items: center;
-  font-size: 1.5em; /* Increase star size */
+  font-size: 1.5em;
+  /* Increase star size */
   cursor: pointer;
 }
 
 .video-rating .star {
-  color: #ccc; /* Empty star color */
+  color: #ccc;
+  /* Empty star color */
   transition: color 0.2s;
 }
 
 .video-rating .star:hover,
 .video-rating .star.hovered {
-  color: #ffc107; /* Hover star color (yellow) */
+  color: #ffc107;
+  /* Hover star color (yellow) */
 }
 
 .video-rating .star.selected {
-  color: #ffc107; /* Selected star color (yellow) */
+  color: #ffc107;
+  /* Selected star color (yellow) */
 }
 
 .video-card-rating {
@@ -393,6 +397,14 @@ body {
 .video-icon {
   font-size: 2em;
   margin-right: 15px;
+}
+
+.video-thumbnail {
+  width: 60px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 4px;
+  display: block;
 }
 
 .video-info {

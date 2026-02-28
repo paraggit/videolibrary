@@ -6,9 +6,16 @@ const crypto = require('crypto');
 const Database = require('better-sqlite3');
 const https = require('https');
 const http = require('http');
+const { exec } = require('child_process');
 
 // Load configuration
 const config = JSON.parse(fs.readFileSync('./config.json', 'utf8'));
+
+// Setup thumbnails directory
+const thumbnailsDir = path.join(config.videoDirectory, '.thumbnails');
+if (config.enableThumbnails && !fs.existsSync(thumbnailsDir)) {
+  fs.mkdirSync(thumbnailsDir, { recursive: true });
+}
 
 const app = express();
 const PORT = config.port || 3000;
@@ -426,6 +433,7 @@ app.get('/api/browse', requireAuth, async (req, res) => {
     }
 
     const contents = await readDirectoryRecursive(fullPath);
+    contents.thumbnailsEnabled = !!config.enableThumbnails;
     res.json(contents);
   } catch (error) {
     console.error('Browse error:', error.message);
@@ -522,7 +530,7 @@ app.get('/api/search', requireAuth, async (req, res) => {
     const fullPath = sanitizePath(startPath);
     const results = await searchVideosRecursive(fullPath, query, ratingFilter);
 
-    res.json({ results, count: results.length });
+    res.json({ results, count: results.length, thumbnailsEnabled: !!config.enableThumbnails });
   } catch (error) {
     console.error('Stream error:', error.message);
     res.status(500).json({ error: error.message });
@@ -553,6 +561,57 @@ app.get('/api/image', requireAuth, async (req, res) => {
 
   } catch (error) {
     console.error('Image serve error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Generate and serve video thumbnails
+app.get('/api/thumbnail', requireAuth, async (req, res) => {
+  if (!config.enableThumbnails) {
+    return res.status(403).json({ error: 'Thumbnails are disabled' });
+  }
+
+  try {
+    const requestedPath = req.query.path;
+    if (!requestedPath) {
+      return res.status(400).json({ error: 'Path parameter required' });
+    }
+
+    const fullPath = sanitizePath(requestedPath);
+    if (!fs.existsSync(fullPath) || !isVideoFile(fullPath)) {
+      return res.status(404).json({ error: 'Valid video file not found' });
+    }
+
+    // Use hash to avoid invalid filename characters
+    const hash = crypto.createHash('md5').update(requestedPath).digest('hex');
+    const thumbnailPath = path.join(thumbnailsDir, `${hash}.jpg`);
+
+    if (fs.existsSync(thumbnailPath)) {
+      return res.sendFile(thumbnailPath);
+    }
+
+    // Generate thumbnail locally without sending data to external networks
+    exec(`ffmpeg -i "${fullPath}" -ss 00:00:05.000 -vframes 1 "${thumbnailPath}" -y`, (error) => {
+      if (error) {
+        // Fallback to 1 second if video is short
+        exec(`ffmpeg -i "${fullPath}" -ss 00:00:01.000 -vframes 1 "${thumbnailPath}" -y`, (err2) => {
+          if (err2 || !fs.existsSync(thumbnailPath)) {
+            console.error('Thumbnail generation failed for:', requestedPath);
+            return res.status(500).json({ error: 'Failed to generate thumbnail' });
+          }
+          res.sendFile(thumbnailPath);
+        });
+      } else {
+        if (fs.existsSync(thumbnailPath)) {
+          res.sendFile(thumbnailPath);
+        } else {
+          res.status(500).json({ error: 'Failed to generate thumbnail' });
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Thumbnail error:', error.message);
     res.status(500).json({ error: error.message });
   }
 });

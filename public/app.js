@@ -43,6 +43,7 @@ let allFiles = [];
 let searchTimeout = null;
 let isSearchMode = false;
 let selectionMode = false;
+let thumbnailsEnabled = false;
 let selectedFiles = new Set();
 let currentVideoPath = '';
 let currentVideoName = '';
@@ -376,6 +377,7 @@ async function loadDirectory(path) {
 
         const data = await response.json();
         allFiles = data.files || [];
+        thumbnailsEnabled = data.thumbnailsEnabled || false;
 
         displayFolders(data.folders || []);
         displayVideos(allFiles);
@@ -429,7 +431,13 @@ function displayVideos(files, showFolderPath = false) {
         const selectedClass = isSelected ? 'selected' : '';
 
         // Get appropriate icon based on file type
-        const icon = getFileIcon(file.type);
+        let iconHtml;
+        if ((file.type === 'video' || !file.type) && thumbnailsEnabled) {
+            const thumbUrl = `/api/thumbnail?path=${encodeURIComponent(file.path)}`;
+            iconHtml = `<img src="${thumbUrl}" alt="Thumbnail" class="video-thumbnail" onerror="this.onerror=null; this.outerHTML='🎬';">`;
+        } else {
+            iconHtml = getFileIcon(file.type);
+        }
 
         // Create detailed tooltip
         const tooltip = `Type: ${file.type || 'video'}
@@ -443,7 +451,7 @@ Path: ${file.path}`;
              data-type="${file.type || 'video'}"
              title="${escapeHtml(tooltip)}">
           ${selectionMode ? `<input type="checkbox" class="video-checkbox" ${isSelected ? 'checked' : ''}>` : ''}
-          <div class="video-icon">${icon}</div>
+          <div class="video-icon">${iconHtml}</div>
           <div class="video-info">
             <div class="video-name">${escapeHtml(file.name)}</div>
             <div class="video-meta">
@@ -652,6 +660,7 @@ async function performSearch(query, ratingFilter = '0') {
         }
 
         const data = await response.json();
+        thumbnailsEnabled = data.thumbnailsEnabled || false;
         // The endpoint may return videos from root if query is empty, let's filter if needed, 
         // or let the backend handle it. Since backend requires 2 chars for search, if query is empty but minRating > 0 we should handle it. 
         // Actually, our backend requires q >= 2 right now. We fix that locally or just rely on backend.

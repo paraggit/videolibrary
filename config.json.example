@@ -1,0 +1,36 @@
+{
+    "videoDirectory": "/path/to/your/videos",
+    "port": 3310,
+    "host": "127.0.0.1",
+    "password": "changeme123",
+    "enableThumbnails": true,
+    "maxRecursionDepth": 10,
+    "allowedExtensions": [
+        ".mp4",
+        ".avi",
+        ".mkv",
+        ".mov",
+        ".wmv",
+        ".flv",
+        ".webm",
+        ".m4v",
+        ".mpeg",
+        ".mpg"
+    ],
+    "allowedImageExtensions": [
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".gif",
+        ".webp",
+        ".bmp",
+        ".svg"
+    ],
+    "https": {
+        "enabled": false,
+        "port": 3443,
+        "certificatePath": "./certs/certificate.pem",
+        "privateKeyPath": "./certs/private-key.pem",
+        "redirectHttp": true
+    }
+}

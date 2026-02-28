@@ -14,9 +14,22 @@ const app = express();
 const PORT = config.port || 3000;
 const HOST = config.host || '127.0.0.1';
 
+// Determine database path, fallback to local directory if configured videoDirectory is inaccessible
+let dbPath;
+try {
+  // Ensure the video directory exists
+  if (!fs.existsSync(config.videoDirectory)) {
+    fs.mkdirSync(config.videoDirectory, { recursive: true });
+  }
+  dbPath = path.join(config.videoDirectory, 'videolibrary.db');
+} catch (error) {
+  console.warn(`\u26A0\uFE0F Could not access or create videoDirectory at ${config.videoDirectory}. Falling back to local directory for database.`);
+  dbPath = path.join(__dirname, 'videolibrary.db');
+}
+
 // Initialize SQLite database
-const dbPath = path.join(config.videoDirectory, 'videolibrary.db');
 const db = new Database(dbPath);
+
 
 // Create database schema
 function initializeDatabase() {
@@ -39,8 +52,23 @@ function initializeDatabase() {
       UNIQUE(album_id, video_path)
     );
     
+    CREATE TABLE IF NOT EXISTS video_ratings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      video_path TEXT NOT NULL UNIQUE,
+      rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS video_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      video_path TEXT NOT NULL UNIQUE,
+      last_watched DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    
     CREATE INDEX IF NOT EXISTS idx_album_videos_album_id ON album_videos(album_id);
     CREATE INDEX IF NOT EXISTS idx_album_videos_video_path ON album_videos(video_path);
+    CREATE INDEX IF NOT EXISTS idx_video_ratings_video_path ON video_ratings(video_path);
+    CREATE INDEX IF NOT EXISTS idx_video_history_video_path ON video_history(video_path);
   `);
 
   console.log('✅ Database initialized:', dbPath);
@@ -256,6 +284,13 @@ async function readDirectoryRecursive(dirPath, currentDepth = 0) {
       files: []
     };
 
+    // Pre-fetch all ratings into memory
+    const ratingsList = db.prepare('SELECT video_path, rating FROM video_ratings').all();
+    const ratingsMap = new Map();
+    for (const r of ratingsList) {
+      ratingsMap.set(r.video_path, r.rating);
+    }
+
     for (const item of items) {
       const itemPath = path.join(dirPath, item.name);
       const relativePath = path.relative(config.videoDirectory, itemPath);
@@ -277,7 +312,8 @@ async function readDirectoryRecursive(dirPath, currentDepth = 0) {
           path: relativePath,
           type: getFileType(item.name),
           size: stats.size,
-          modified: stats.mtime
+          modified: stats.mtime,
+          rating: ratingsMap.get(relativePath) || 0
         });
       }
     }
@@ -316,6 +352,67 @@ app.post('/api/logout', requireAuth, (req, res) => {
   });
 });
 
+// API to get rating for a video
+app.get('/api/rating', requireAuth, (req, res) => {
+  try {
+    const { video_path } = req.query;
+    if (!video_path) {
+      return res.status(400).json({ error: 'video_path parameter required' });
+    }
+    const row = db.prepare('SELECT rating FROM video_ratings WHERE video_path = ?').get(video_path);
+    res.json({ rating: row ? row.rating : 0 });
+  } catch (error) {
+    console.error('Get rating error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// API to set rating for a video
+app.post('/api/rating', requireAuth, (req, res) => {
+  try {
+    const { video_path, rating } = req.body;
+    if (!video_path || rating === undefined) {
+      return res.status(400).json({ error: 'video_path and rating are required' });
+    }
+
+    const parsedRating = parseInt(rating, 10);
+    if (isNaN(parsedRating) || parsedRating < 1 || parsedRating > 5) {
+      return res.status(400).json({ error: 'rating must be an integer between 1 and 5' });
+    }
+
+    db.prepare(`
+      INSERT INTO video_ratings (video_path, rating, updated_at) 
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(video_path) DO UPDATE SET rating = ?, updated_at = CURRENT_TIMESTAMP
+    `).run(video_path, parsedRating, parsedRating);
+
+    res.json({ success: true, rating: parsedRating });
+  } catch (error) {
+    console.error('Set rating error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// API to record watched history
+app.post('/api/history', requireAuth, (req, res) => {
+  try {
+    const { video_path } = req.body;
+    if (!video_path) {
+      return res.status(400).json({ error: 'video_path parameter required' });
+    }
+    db.prepare(`
+      INSERT INTO video_history (video_path, last_watched) 
+      VALUES (?, CURRENT_TIMESTAMP)
+      ON CONFLICT(video_path) DO UPDATE SET last_watched = CURRENT_TIMESTAMP
+    `).run(video_path);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('History API error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
 // Get directory contents
 app.get('/api/browse', requireAuth, async (req, res) => {
   try {
@@ -337,9 +434,20 @@ app.get('/api/browse', requireAuth, async (req, res) => {
 });
 
 // Recursive search for videos
-async function searchVideosRecursive(startPath, query, maxResults = 100) {
+async function searchVideosRecursive(startPath, query, ratingFilter = '0', maxResults = 100) {
   const results = [];
   const lowerQuery = query.toLowerCase();
+
+  // Pre-fetch all ratings into memory
+  const ratingsList = db.prepare('SELECT video_path, rating FROM video_ratings').all();
+  const ratingsMap = new Map();
+  for (const r of ratingsList) {
+    ratingsMap.set(r.video_path, r.rating);
+  }
+
+  // Pre-fetch seen history
+  const historyList = db.prepare('SELECT video_path FROM video_history').all();
+  const seenSet = new Set(historyList.map(h => h.video_path));
 
   async function searchDir(dirPath, depth = 0) {
     if (depth > config.maxRecursionDepth || results.length >= maxResults) {
@@ -362,6 +470,19 @@ async function searchVideosRecursive(startPath, query, maxResults = 100) {
           await searchDir(itemPath, depth + 1);
         } else if (item.isFile() && isMediaFile(item.name)) {
           if (item.name.toLowerCase().includes(lowerQuery)) {
+            // Apply rating/seen filter
+            const rating = ratingsMap.get(relativePath) || 0;
+            const isSeen = seenSet.has(relativePath);
+
+            if (ratingFilter === 'seen') {
+              if (!isSeen) continue;
+            } else {
+              const exactRating = parseInt(ratingFilter, 10);
+              if (exactRating > 0 && rating !== exactRating) {
+                continue;
+              }
+            }
+
             const stats = await fs.promises.stat(itemPath);
             results.push({
               name: item.name,
@@ -369,7 +490,9 @@ async function searchVideosRecursive(startPath, query, maxResults = 100) {
               folder: path.dirname(relativePath) || 'Home',
               type: getFileType(item.name),
               size: stats.size,
-              modified: stats.mtime
+              modified: stats.mtime,
+              rating: rating,
+              seen: isSeen
             });
           }
         }
@@ -389,14 +512,15 @@ app.get('/api/search', requireAuth, async (req, res) => {
   try {
     const query = req.query.q || '';
     const startPath = req.query.path || '';
+    const ratingFilter = req.query.ratingFilter || '0';
 
-    // Require at least 2 characters for search
-    if (!query || query.length < 2) {
+    // Require at least 2 characters for search, unless a rating filter is applied
+    if ((!query || query.length < 2) && ratingFilter === '0') {
       return res.json({ results: [], count: 0 });
     }
 
     const fullPath = sanitizePath(startPath);
-    const results = await searchVideosRecursive(fullPath, query);
+    const results = await searchVideosRecursive(fullPath, query, ratingFilter);
 
     res.json({ results, count: results.length });
   } catch (error) {

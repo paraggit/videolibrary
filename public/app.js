@@ -150,6 +150,7 @@ function init() {
     loginForm.addEventListener('submit', handleLogin);
     logoutBtn.addEventListener('click', handleLogout);
     searchInput.addEventListener('input', handleSearch);
+    document.getElementById('rating-filter').addEventListener('change', handleSearch);
     closePlayer.addEventListener('click', closeVideoPlayer);
     playbackSpeed.addEventListener('change', handleSpeedChange);
     fullscreenBtn.addEventListener('click', toggleFullscreen);
@@ -179,6 +180,8 @@ function init() {
     rotateLeftBtn.addEventListener('click', rotateLeft);
     rotateRightBtn.addEventListener('click', rotateRight);
     fullscreenImageBtn.addEventListener('click', toggleImageFullscreen);
+    const deleteImageBtn = document.getElementById('delete-image-btn');
+    if (deleteImageBtn) deleteImageBtn.addEventListener('click', deleteCurrentImage);
 
     // Navigation event listeners
     prevMediaBtn.addEventListener('click', playPreviousMedia);
@@ -199,6 +202,79 @@ function init() {
 
     // Check if already authenticated by trying to load directory
     checkAuthentication();
+
+    // Initialize rating stars
+    initRatingStars();
+}
+
+// Initialize rating stars behavior
+function initRatingStars() {
+    const stars = document.querySelectorAll('#video-rating-container .star');
+
+    stars.forEach(star => {
+        // Hover effect
+        star.addEventListener('mouseover', function () {
+            const value = parseInt(this.dataset.value);
+            stars.forEach(s => {
+                const sValue = parseInt(s.dataset.value);
+                if (sValue <= value) {
+                    s.classList.add('hovered');
+                } else {
+                    s.classList.remove('hovered');
+                }
+            });
+        });
+
+        // Remove hover effect
+        star.addEventListener('mouseout', function () {
+            stars.forEach(s => s.classList.remove('hovered'));
+        });
+
+        // Click to rate
+        star.addEventListener('click', async function () {
+            const ratingValue = parseInt(this.dataset.value);
+            if (!currentVideoPath) return;
+
+            try {
+                const response = await fetch('/api/rating', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ video_path: currentVideoPath, rating: ratingValue })
+                });
+
+                if (response.ok) {
+                    setVideoRatingDisplay(ratingValue);
+
+                    // Update the star rating in the allFiles list or currentMediaList
+                    const media = currentMediaList.find(m => m.path === currentVideoPath);
+                    if (media) {
+                        media.rating = ratingValue;
+                    }
+                    if (isSearchMode) {
+                        performSearch(searchInput.value, document.getElementById('rating-filter').value);
+                    } else {
+                        loadDirectory(currentPath);
+                    }
+                }
+            } catch (error) {
+                console.error("Failed to save rating:", error);
+            }
+        });
+    });
+}
+
+// Set video rating visual display
+function setVideoRatingDisplay(rating) {
+    const stars = document.querySelectorAll('#video-rating-container .star');
+    stars.forEach(s => {
+        const sValue = parseInt(s.dataset.value);
+        if (sValue <= rating) {
+            s.classList.add('selected');
+        } else {
+            s.classList.remove('selected');
+        }
+    });
 }
 
 // Check if user is already authenticated
@@ -406,7 +482,7 @@ Path: ${file.path}`;
 }
 
 // Play video
-function playVideo(path, name) {
+async function playVideo(path, name) {
     // Find and store current index
     currentMediaIndex = currentMediaList.findIndex(f => f.path === path);
 
@@ -417,6 +493,30 @@ function playVideo(path, name) {
     videoTitle.textContent = name;
     videoPlayer.src = `/api/video?path=${encodeURIComponent(path)}`;
     videoPlayerContainer.style.display = 'block';
+
+    // Fetch and display rating
+    try {
+        const ratingRes = await fetch(`/api/rating?video_path=${encodeURIComponent(path)}`);
+        if (ratingRes.ok) {
+            const data = await ratingRes.json();
+            setVideoRatingDisplay(data.rating || 0);
+        }
+    } catch (e) {
+        console.error("Error fetching rating:", e);
+    }
+
+    // Record history
+    try {
+        await fetch('/api/history', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ video_path: path })
+        });
+    } catch (e) {
+        console.error("Error saving history:", e);
+    }
+
     videoPlayer.play();
 
     // Update navigation button states
@@ -503,39 +603,43 @@ function handleKeyboard(e) {
 }
 // Handle search with debouncing
 function handleSearch(e) {
-    const query = e.target.value.trim();
+    const query = e.target.value ? e.target.value.trim() : searchInput.value.trim();
+    const ratingFilter = document.getElementById('rating-filter').value;
 
     // Clear previous timeout
     if (searchTimeout) {
         clearTimeout(searchTimeout);
     }
 
-    // If search is empty, return to normal browsing
-    if (!query) {
+    // If search is empty and no rating filter, return to normal browsing
+    if (!query && ratingFilter === '0') {
         isSearchMode = false;
         loadDirectory(currentPath);
         return;
     }
 
-    // Require at least 2 characters
-    if (query.length < 2) {
+    // Require at least 2 characters if there is a search query
+    if (query && query.length < 2) {
         statusMessage.textContent = 'Type at least 2 characters to search';
         return;
     }
 
     // Debounce search by 300ms
     searchTimeout = setTimeout(async () => {
-        await performSearch(query);
+        await performSearch(query, ratingFilter);
     }, 300);
 }
 
 // Perform recursive search
-async function performSearch(query) {
+async function performSearch(query, ratingFilter = '0') {
     isSearchMode = true;
     statusMessage.textContent = 'Searching...';
 
+    // If we're filtering by rating, search from the root directory
+    const searchPath = ratingFilter !== '0' ? '' : currentPath;
+
     try {
-        const response = await fetch(`/api/search?q=${encodeURIComponent(query)}&path=${encodeURIComponent(currentPath)}`, {
+        const response = await fetch(`/api/search?q=${encodeURIComponent(query)}&path=${encodeURIComponent(searchPath)}&ratingFilter=${encodeURIComponent(ratingFilter)}`, {
             credentials: 'same-origin'
         });
 
@@ -548,6 +652,12 @@ async function performSearch(query) {
         }
 
         const data = await response.json();
+        // The endpoint may return videos from root if query is empty, let's filter if needed, 
+        // or let the backend handle it. Since backend requires 2 chars for search, if query is empty but minRating > 0 we should handle it. 
+        // Actually, our backend requires q >= 2 right now. We fix that locally or just rely on backend.
+        // Wait, the backend says `if (!query || query.length < 2) { return res.json({ results: [], count: 0 }); }`
+        // We will update the backend search endpoint to allow empty query if minRating > 0.
+
         displayVideos(data.results, true); // Show folder paths in search results
 
         if (data.count > 0) {
@@ -1214,6 +1324,79 @@ function viewImage(imagePath, imageName, fileSize, fileModified) {
 function closeImage() {
     imageViewer.style.display = 'none';
     imageDisplay.src = '';
+}
+
+// Delete current image from image viewer
+async function deleteCurrentImage() {
+    // Current image details
+    const currentMedia = currentMediaList[currentMediaIndex];
+    if (!currentMedia || !currentMedia.path) {
+        alert('No image is currently being viewed');
+        return;
+    }
+
+    const imagePath = currentMedia.path;
+    const imageName = currentMedia.name;
+
+    // Confirmation dialog
+    if (!confirm(`Are you sure you want to permanently delete "${imageName}"?\n\nThis action cannot be undone.`)) {
+        return;
+    }
+
+    statusMessage.textContent = `Deleting ${imageName}...`;
+    const deleteImageBtn = document.getElementById('delete-image-btn');
+    if (deleteImageBtn) deleteImageBtn.disabled = true;
+
+    try {
+        const response = await fetch('/api/video', { // Uses the same endpoint which deletes files
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ path: imagePath })
+        });
+
+        if (!response.ok) {
+            throw new Error('Delete failed');
+        }
+
+        const data = await response.json();
+
+        if (data.deleted > 0) {
+            statusMessage.textContent = `Deleted ${imageName} successfully`;
+
+            // Close image viewer
+            closeImage();
+
+            // Check if there's a next media to view
+            if (currentMediaIndex < currentMediaList.length - 1) {
+                // View next media
+                const nextMedia = currentMediaList[currentMediaIndex + 1];
+                if (nextMedia) {
+                    if (nextMedia.type === 'video') {
+                        playVideo(nextMedia.path, nextMedia.name);
+                    } else if (nextMedia.type === 'image') {
+                        viewImage(nextMedia.path, nextMedia.name, nextMedia.size, nextMedia.modified);
+                    }
+                }
+            }
+
+            // Reload current directory
+            if (isSearchMode) {
+                performSearch(searchInput.value);
+            } else {
+                loadDirectory(currentPath);
+            }
+        } else {
+            alert('Failed to delete image');
+        }
+
+    } catch (error) {
+        console.error('Delete error:', error);
+        statusMessage.textContent = 'Delete failed';
+        alert('Failed to delete image. Please try again.');
+    } finally {
+        if (deleteImageBtn) deleteImageBtn.disabled = false;
+    }
 }
 
 // Zoom in

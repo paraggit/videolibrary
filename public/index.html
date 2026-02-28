@@ -61,6 +61,15 @@
       <aside class="sidebar">
         <div class="search-container">
           <input type="text" id="search-input" placeholder="Search videos..." class="search-input">
+          <select id="rating-filter" class="rating-filter">
+            <option value="0">All Ratings</option>
+            <option value="seen">All Seen</option>
+            <option value="5">5 Stars</option>
+            <option value="4">4 Stars</option>
+            <option value="3">3 Stars</option>
+            <option value="2">2 Stars</option>
+            <option value="1">1 Star</option>
+          </select>
         </div>
 
         <div class="breadcrumb" id="breadcrumb">
@@ -85,6 +94,13 @@
           <button id="close-player" class="btn-close close-player-btn">✕</button>
           <div class="player-header">
             <h2 id="video-title"></h2>
+            <div id="video-rating-container" class="video-rating">
+              <span class="star" data-value="1">★</span>
+              <span class="star" data-value="2">★</span>
+              <span class="star" data-value="3">★</span>
+              <span class="star" data-value="4">★</span>
+              <span class="star" data-value="5">★</span>
+            </div>
           </div>
           <video id="video-player" controls></video>
           <div class="video-controls">
@@ -231,6 +247,7 @@
         <button id="rotate-left" class="btn-secondary" title="Rotate Left">↶</button>
         <button id="rotate-right" class="btn-secondary" title="Rotate Right">↷</button>
         <button id="fullscreen-image" class="btn-secondary" title="Fullscreen">⛶</button>
+        <button id="delete-image-btn" class="btn-delete" title="Delete this image">🗑 Delete</button>
         <button id="next-image-btn" class="btn-secondary" title="Next (Right Arrow)">Next ⏭</button>
       </div>
       <div class="image-info">

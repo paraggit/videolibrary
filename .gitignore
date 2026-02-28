@@ -10,3 +10,12 @@ certs/
 *.key
 *.crt
 *.csr
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Misc
+node
+video-library-app@*

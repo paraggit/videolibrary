@@ -64,12 +64,24 @@ const videoTitle = document.getElementById('video-title');
 const closePlayer = document.getElementById('close-player');
 const playbackSpeed = document.getElementById('playback-speed');
 const fullscreenBtn = document.getElementById('fullscreen-btn');
+const rotateVideoLeftBtn = document.getElementById('rotate-video-left');
+const rotateVideoRightBtn = document.getElementById('rotate-video-right');
 const deleteVideoBtn = document.getElementById('delete-video-btn');
+
+// Video player state
+let currentVideoRotation = 0;
 const selectionModeBtn = document.getElementById('selection-mode-btn');
 const addToAlbumBtn = document.getElementById('add-to-album-btn');
 const deleteBtn = document.getElementById('delete-btn');
 const statusMessage = document.getElementById('status-message');
 const fileCount = document.getElementById('file-count');
+
+// View toggle DOM elements
+const gridViewBtn = document.getElementById('grid-view-btn');
+const listViewBtn = document.getElementById('list-view-btn');
+
+// View state
+let currentView = localStorage.getItem('videoLibraryView') || 'grid';
 
 // Album and Rename DOM elements
 const albumsBtn = document.getElementById('albums-btn');
@@ -155,10 +167,17 @@ function init() {
     closePlayer.addEventListener('click', closeVideoPlayer);
     playbackSpeed.addEventListener('change', handleSpeedChange);
     fullscreenBtn.addEventListener('click', toggleFullscreen);
+    if (rotateVideoLeftBtn) rotateVideoLeftBtn.addEventListener('click', rotateVideoLeft);
+    if (rotateVideoRightBtn) rotateVideoRightBtn.addEventListener('click', rotateVideoRight);
     deleteVideoBtn.addEventListener('click', deleteCurrentVideo);
     selectionModeBtn.addEventListener('click', toggleSelectionMode);
     deleteBtn.addEventListener('click', deleteSelectedFiles);
     document.addEventListener('fullscreenchange', updateFullscreenButton);
+
+    // View toggles
+    if (gridViewBtn) gridViewBtn.addEventListener('click', () => setViewMode('grid'));
+    if (listViewBtn) listViewBtn.addEventListener('click', () => setViewMode('list'));
+    setViewMode(currentView);
 
     // Album and rename event listeners
     albumsBtn.addEventListener('click', showAlbumsView);
@@ -498,9 +517,27 @@ async function playVideo(path, name) {
     currentVideoPath = path;
     currentVideoName = name;
 
+    // Set video title and metadata tooltip
     videoTitle.textContent = name;
+
+    // Build metadata tooltip if file data is available
+    if (currentMediaIndex >= 0) {
+        const file = currentMediaList[currentMediaIndex];
+        const tooltip = `Type: ${file.type || 'video'}
+Size: ${formatFileSize(file.size)}
+Modified: ${formatDate(file.modified)}
+Path: ${file.path}`;
+        videoTitle.title = tooltip;
+    } else {
+        videoTitle.title = name;
+    }
+
     videoPlayer.src = `/api/video?path=${encodeURIComponent(path)}`;
     videoPlayerContainer.style.display = 'block';
+
+    // Reset video rotation
+    currentVideoRotation = 0;
+    applyVideoRotation();
 
     // Fetch and display rating
     try {
@@ -537,7 +574,36 @@ function closeVideoPlayer() {
     videoPlayer.pause();
     videoPlayer.src = '';
     videoPlayerContainer.style.display = 'none';
+    currentVideoRotation = 0;
+    applyVideoRotation();
     statusMessage.textContent = 'Ready';
+}
+
+// Rotate video left
+function rotateVideoLeft() {
+    currentVideoRotation -= 90;
+    applyVideoRotation();
+}
+
+// Rotate video right
+function rotateVideoRight() {
+    currentVideoRotation += 90;
+    applyVideoRotation();
+}
+
+// Apply rotation to video element
+function applyVideoRotation() {
+    if (videoPlayer) {
+        // Handle aspect ratio differences during rotation
+        // If it's rotated 90 or 270 degrees, we might need to adjust sizing to avoid overflow
+        // but simple transform is the starting point
+        const scale = (currentVideoRotation % 180 !== 0) ?
+            Math.min(videoPlayerContainer.clientWidth / videoPlayer.videoHeight, videoPlayerContainer.clientHeight / videoPlayer.videoWidth, 1) : 1;
+
+        // Use a simple transform for now to rotate.
+        // We might need to adjust the CSS of video-player if rotation causes issues in fullscreen vs not
+        videoPlayer.style.transform = `rotate(${currentVideoRotation}deg) scale(${scale})`;
+    }
 }
 
 // Handle playback speed change
@@ -766,6 +832,22 @@ function downloadFile(path, name) {
     a.click();
     document.body.removeChild(a);
     statusMessage.textContent = `Downloading: ${name}`;
+}
+
+// Set view mode (grid/list)
+function setViewMode(mode) {
+    currentView = mode;
+    localStorage.setItem('videoLibraryView', mode);
+
+    if (mode === 'list') {
+        videoList.classList.add('list-view');
+        if (listViewBtn) listViewBtn.classList.add('active');
+        if (gridViewBtn) gridViewBtn.classList.remove('active');
+    } else {
+        videoList.classList.remove('list-view');
+        if (gridViewBtn) gridViewBtn.classList.add('active');
+        if (listViewBtn) listViewBtn.classList.remove('active');
+    }
 }
 
 // Selection Mode Functions

@@ -48,6 +48,10 @@
         <button id="create-folder-btn" class="btn-secondary">📁 New Folder</button>
         <button id="upload-files-btn" class="btn-secondary">📤 Upload Files</button>
         <button id="albums-btn" class="btn-secondary">📚 Albums</button>
+        <div class="view-toggle">
+          <button id="grid-view-btn" class="btn-secondary active" title="Grid View">⊞</button>
+          <button id="list-view-btn" class="btn-secondary" title="List View">☰</button>
+        </div>
         <button id="selection-mode-btn" class="btn-secondary">☑ Select</button>
         <button id="add-to-album-btn" class="btn-secondary" style="display: none;">➕ Add to Album</button>
         <button id="delete-btn" class="btn-delete" style="display: none;">🗑 Delete</button>
@@ -105,6 +109,8 @@
           <video id="video-player" controls></video>
           <div class="video-controls">
             <button id="prev-media-btn" class="btn-secondary" title="Previous (Left Arrow)">⏮ Previous</button>
+            <button id="rotate-video-left" class="btn-secondary" title="Rotate Left">↶</button>
+            <button id="rotate-video-right" class="btn-secondary" title="Rotate Right">↷</button>
             <label for="playback-speed">Speed:</label>
             <select id="playback-speed">
               <option value="0.5">0.5x</option>

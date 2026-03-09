@@ -153,6 +153,30 @@ body {
   align-items: center;
 }
 
+.view-toggle {
+  display: flex;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.view-toggle .btn-secondary {
+  border: none;
+  border-radius: 0;
+  padding: 8px 12px;
+  font-size: 1.1em;
+  background: transparent;
+}
+
+.view-toggle .btn-secondary:not(:last-child) {
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.view-toggle .btn-secondary.active {
+  background: rgba(102, 126, 234, 0.3);
+}
+
 .btn-secondary {
   padding: 8px 20px;
   background: rgba(255, 255, 255, 0.15);
@@ -364,6 +388,43 @@ body {
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 15px;
   align-content: start;
+}
+
+/* List View Styles */
+.video-list.list-view {
+  display: flex;
+  flex-direction: column;
+}
+
+.video-list.list-view .video-item {
+  padding: 10px 15px;
+}
+
+.video-list.list-view .video-thumbnail {
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+}
+
+.video-list.list-view .video-info {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+}
+
+.video-list.list-view .video-name {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.video-list.list-view .video-meta {
+  margin-left: 20px;
+  white-space: nowrap;
+}
+
+.video-list.list-view .video-folder-path {
+  margin-left: 20px;
+  white-space: nowrap;
 }
 
 .video-item {

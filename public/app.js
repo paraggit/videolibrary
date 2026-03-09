@@ -79,6 +79,7 @@ const fileCount = document.getElementById('file-count');
 // View toggle DOM elements
 const gridViewBtn = document.getElementById('grid-view-btn');
 const listViewBtn = document.getElementById('list-view-btn');
+const themeToggleBtn = document.getElementById('theme-toggle-btn');
 
 // View state
 let currentView = localStorage.getItem('videoLibraryView') || 'grid';
@@ -178,6 +179,10 @@ function init() {
     if (gridViewBtn) gridViewBtn.addEventListener('click', () => setViewMode('grid'));
     if (listViewBtn) listViewBtn.addEventListener('click', () => setViewMode('list'));
     setViewMode(currentView);
+
+    // Theme toggle
+    if (themeToggleBtn) themeToggleBtn.addEventListener('click', toggleTheme);
+    initTheme();
 
     // Album and rename event listeners
     albumsBtn.addEventListener('click', showAlbumsView);
@@ -786,6 +791,19 @@ function updateFileCount(count, total = null) {
     } else {
         fileCount.textContent = `${count} video${count !== 1 ? 's' : ''}`;
     }
+}
+
+// Theme handling
+function initTheme() {
+    const savedTheme = localStorage.getItem('videoLibraryTheme') || 'dark';
+    document.documentElement.setAttribute('data-theme', savedTheme);
+}
+
+function toggleTheme() {
+    const currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
+    const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', newTheme);
+    localStorage.setItem('videoLibraryTheme', newTheme);
 }
 
 // Utility functions

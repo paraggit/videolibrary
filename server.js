@@ -17,6 +17,12 @@ if (config.enableThumbnails && !fs.existsSync(thumbnailsDir)) {
   fs.mkdirSync(thumbnailsDir, { recursive: true });
 }
 
+// Setup trash directory
+const trashDir = path.join(config.videoDirectory, '.trash');
+if (!fs.existsSync(trashDir)) {
+  fs.mkdirSync(trashDir, { recursive: true });
+}
+
 const app = express();
 const PORT = config.port || 3000;
 const HOST = config.host || '127.0.0.1';
@@ -76,12 +82,77 @@ function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_album_videos_video_path ON album_videos(video_path);
     CREATE INDEX IF NOT EXISTS idx_video_ratings_video_path ON video_ratings(video_path);
     CREATE INDEX IF NOT EXISTS idx_video_history_video_path ON video_history(video_path);
+
+    CREATE TABLE IF NOT EXISTS tags (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      color TEXT DEFAULT '#667eea',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS video_tags (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      video_path TEXT NOT NULL,
+      tag_id INTEGER NOT NULL,
+      FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE,
+      UNIQUE(video_path, tag_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS favorites (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      video_path TEXT NOT NULL UNIQUE,
+      added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS watch_progress (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      video_path TEXT NOT NULL UNIQUE,
+      current_time REAL NOT NULL DEFAULT 0,
+      duration REAL NOT NULL DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS trash (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      original_path TEXT NOT NULL,
+      trash_path TEXT NOT NULL,
+      original_name TEXT NOT NULL,
+      size INTEGER,
+      deleted_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_video_tags_video_path ON video_tags(video_path);
+    CREATE INDEX IF NOT EXISTS idx_video_tags_tag_id ON video_tags(tag_id);
+    CREATE INDEX IF NOT EXISTS idx_favorites_video_path ON favorites(video_path);
+    CREATE INDEX IF NOT EXISTS idx_watch_progress_video_path ON watch_progress(video_path);
+    CREATE INDEX IF NOT EXISTS idx_trash_original_path ON trash(original_path);
   `);
 
   console.log('✅ Database initialized:', dbPath);
 }
 
 initializeDatabase();
+
+// Auto-purge old trash items
+(function purgeOldTrash() {
+  const retentionDays = config.trashRetentionDays || 30;
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+  const oldItems = db.prepare('SELECT id, trash_path FROM trash WHERE deleted_at < ?').all(cutoff);
+  for (const item of oldItems) {
+    try {
+      const fullTrashPath = path.join(trashDir, item.trash_path);
+      if (fs.existsSync(fullTrashPath)) {
+        fs.unlinkSync(fullTrashPath);
+      }
+      db.prepare('DELETE FROM trash WHERE id = ?').run(item.id);
+    } catch (e) {
+      console.warn(`Failed to purge trash item ${item.id}:`, e.message);
+    }
+  }
+  if (oldItems.length > 0) {
+    console.log(`Purged ${oldItems.length} old trash items (>${retentionDays} days)`);
+  }
+})();
 
 // Middleware to parse JSON and URL-encoded data
 app.use(express.json());

@@ -135,7 +135,7 @@ initializeDatabase();
 
 // Auto-purge old trash items
 (function purgeOldTrash() {
-  const retentionDays = config.trashRetentionDays || 30;
+  const retentionDays = Math.max(1, parseInt(config.trashRetentionDays) || 30);
   const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
   const oldItems = db.prepare('SELECT id, trash_path FROM trash WHERE deleted_at < ?').all(cutoff);
   for (const item of oldItems) {
@@ -393,6 +393,10 @@ async function readDirectoryRecursive(dirPath, currentDepth = 0) {
       }
     }
 
+    // Pre-fetch seen history
+    const historyList = db.prepare('SELECT video_path FROM video_history').all();
+    const seenSet = new Set(historyList.map(h => h.video_path));
+
     for (const item of items) {
       const itemPath = path.join(dirPath, item.name);
       const relativePath = path.relative(config.videoDirectory, itemPath);
@@ -418,7 +422,8 @@ async function readDirectoryRecursive(dirPath, currentDepth = 0) {
           rating: ratingsMap.get(relativePath) || 0,
           favorite: favSet.has(relativePath),
           tags: tagsMap.get(relativePath) || [],
-          progress: progressMap.get(relativePath) ?? null
+          progress: progressMap.get(relativePath) ?? null,
+          seen: seenSet.has(relativePath)
         });
       }
     }
@@ -752,6 +757,7 @@ app.delete('/api/video', requireAuth, async (req, res) => {
     }
 
     const results = { deleted: [], failed: [] };
+    const trashIds = [];
 
     for (const filePath of pathsToDelete) {
       try {
@@ -768,9 +774,10 @@ app.delete('/api/video', requireAuth, async (req, res) => {
 
         await fs.promises.rename(fullPath, trashFullPath);
 
-        db.prepare(`INSERT INTO trash (original_path, trash_path, original_name, size) VALUES (?, ?, ?, ?)`)
+        const insertResult = db.prepare(`INSERT INTO trash (original_path, trash_path, original_name, size) VALUES (?, ?, ?, ?)`)
           .run(filePath, trashFileName, fileName, stats.size);
 
+        trashIds.push(insertResult.lastInsertRowid);
         results.deleted.push(filePath);
         console.log(`Moved to trash: ${filePath}`);
       } catch (error) {
@@ -779,16 +786,15 @@ app.delete('/api/video', requireAuth, async (req, res) => {
       }
     }
 
-    const lastTrashId = results.deleted.length > 0
-      ? db.prepare('SELECT id FROM trash ORDER BY id DESC LIMIT 1').get()?.id
-      : null;
+    const lastTrashId = trashIds.length > 0 ? trashIds[trashIds.length - 1] : null;
 
     res.json({
       success: true,
       deleted: results.deleted.length,
       failed: results.failed.length,
       details: results,
-      lastTrashId: lastTrashId
+      lastTrashId: lastTrashId,
+      trashIds: trashIds
     });
   } catch (error) {
     console.error('Delete error:', error.message);
@@ -1202,8 +1208,13 @@ app.post('/api/tags', requireAuth, (req, res) => {
     if (!name || name.trim().length === 0) {
       return res.status(400).json({ error: 'Tag name required' });
     }
+    // Validate color format
+    const colorValue = color || '#667eea';
+    if (!/^#[0-9a-fA-F]{6}$/.test(colorValue)) {
+      return res.status(400).json({ error: 'Invalid color format. Must be #RRGGBB' });
+    }
     const result = db.prepare('INSERT INTO tags (name, color) VALUES (?, ?)')
-      .run(name.trim(), color || '#667eea');
+      .run(name.trim(), colorValue);
     const tag = db.prepare('SELECT * FROM tags WHERE id = ?').get(result.lastInsertRowid);
     res.json({ success: true, tag });
   } catch (error) {
@@ -1486,6 +1497,10 @@ app.get('/api/subtitle/file', requireAuth, (req, res) => {
     if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'Subtitle not found' });
 
     const ext = path.extname(fullPath).toLowerCase();
+    // Validate subtitle file extension
+    if (!['.srt', '.vtt', '.ass'].includes(ext)) {
+      return res.status(400).json({ error: 'Invalid subtitle file type' });
+    }
     let content = fs.readFileSync(fullPath, 'utf8');
 
     if (ext === '.srt') {

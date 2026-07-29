@@ -1085,7 +1085,7 @@ async function deleteSelectedFiles() {
             selectionMode = false;
             updateSelectionUI();
 
-            showUndoToast(data.lastTrashId);
+            showUndoToast(data.trashIds || data.lastTrashId);
             updateTrashBadge();
 
             // Reload current directory
@@ -2295,6 +2295,8 @@ function setupAutoAdvance() {
 }
 
 function showAutoplayCountdown() {
+    if (autoplayTimer) { clearInterval(autoplayTimer); autoplayTimer = null; }
+
     const countdown = document.getElementById('autoplay-countdown');
     const titleEl = document.getElementById('countdown-title');
     const secondsEl = document.getElementById('countdown-seconds');
@@ -2461,18 +2463,23 @@ async function showTrash() {
     };
 }
 
-function showUndoToast(trashId) {
-    if (!trashId) return;
+function showUndoToast(trashIdOrIds) {
+    if (!trashIdOrIds) return;
+    // Support both single ID and array of IDs
+    const trashIds = Array.isArray(trashIdOrIds) ? trashIdOrIds : [trashIdOrIds];
     const toast = document.getElementById('undo-toast');
     toast.style.display = 'flex';
     const timeout = setTimeout(() => { toast.style.display = 'none'; }, 5000);
     document.getElementById('undo-restore-btn').onclick = async () => {
         clearTimeout(timeout);
         toast.style.display = 'none';
-        await fetch('/api/trash/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ id: trashId }) });
+        // Restore all trash items
+        for (const id of trashIds) {
+            await fetch('/api/trash/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ id }) });
+        }
         updateTrashBadge();
         if (isSearchMode) performSearch(searchInput.value); else loadDirectory(currentPath);
-        statusMessage.textContent = 'File restored from trash';
+        statusMessage.textContent = trashIds.length === 1 ? 'File restored from trash' : `${trashIds.length} files restored from trash`;
     };
 }
 
@@ -2549,17 +2556,17 @@ function showBatchRateModal() {
     modal.style.display = 'flex';
     const stars = modal.querySelectorAll('.batch-star');
     stars.forEach(star => {
-        star.addEventListener('mouseover', () => {
+        star.onmouseover = () => {
             const val = parseInt(star.dataset.value);
             stars.forEach(s => s.classList.toggle('hovered', parseInt(s.dataset.value) <= val));
-        });
-        star.addEventListener('mouseout', () => stars.forEach(s => s.classList.remove('hovered')));
-        star.addEventListener('click', async () => {
+        };
+        star.onmouseout = () => stars.forEach(s => s.classList.remove('hovered'));
+        star.onclick = async () => {
             modal.style.display = 'none';
             await fetch('/api/video/batch-rate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ paths: Array.from(selectedFiles), rating: parseInt(star.dataset.value) }) });
             statusMessage.textContent = `Rated ${selectedFiles.size} files`;
             loadDirectory(currentPath);
-        });
+        };
     });
     document.getElementById('batch-rate-cancel').onclick = () => modal.style.display = 'none';
 }

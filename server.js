@@ -687,52 +687,55 @@ app.get('/api/thumbnail', requireAuth, async (req, res) => {
   }
 });
 
-// Delete video file(s)
+// Delete video file(s) - moves to trash instead of permanent deletion
 app.delete('/api/video', requireAuth, async (req, res) => {
   try {
     const { path: singlePath, paths: multiplePaths } = req.body;
-
-    // Support both single and multiple file deletion
     const pathsToDelete = multiplePaths || (singlePath ? [singlePath] : []);
 
     if (pathsToDelete.length === 0) {
       return res.status(400).json({ error: 'No files specified for deletion' });
     }
 
-    const results = {
-      deleted: [],
-      failed: []
-    };
+    const results = { deleted: [], failed: [] };
 
     for (const filePath of pathsToDelete) {
       try {
         const fullPath = sanitizePath(filePath);
-
-        // Verify file exists
         const stats = await fs.promises.stat(fullPath);
         if (!stats.isFile()) {
           results.failed.push({ path: filePath, error: 'Invalid file' });
           continue;
         }
 
-        // Delete the file
-        await fs.promises.unlink(fullPath);
-        results.deleted.push(filePath);
-        console.log(`Deleted file: ${filePath}`);
+        const fileName = path.basename(fullPath);
+        const trashFileName = `${Date.now()}_${fileName}`;
+        const trashFullPath = path.join(trashDir, trashFileName);
 
+        await fs.promises.rename(fullPath, trashFullPath);
+
+        db.prepare(`INSERT INTO trash (original_path, trash_path, original_name, size) VALUES (?, ?, ?, ?)`)
+          .run(filePath, trashFileName, fileName, stats.size);
+
+        results.deleted.push(filePath);
+        console.log(`Moved to trash: ${filePath}`);
       } catch (error) {
-        console.error(`Failed to delete ${filePath}:`, error.message);
+        console.error(`Failed to trash ${filePath}:`, error.message);
         results.failed.push({ path: filePath, error: error.message });
       }
     }
+
+    const lastTrashId = results.deleted.length > 0
+      ? db.prepare('SELECT id FROM trash ORDER BY id DESC LIMIT 1').get()?.id
+      : null;
 
     res.json({
       success: true,
       deleted: results.deleted.length,
       failed: results.failed.length,
-      details: results
+      details: results,
+      lastTrashId: lastTrashId
     });
-
   } catch (error) {
     console.error('Delete error:', error.message);
     res.status(500).json({ error: error.message });
@@ -1289,6 +1292,94 @@ app.get('/api/progress', requireAuth, (req, res) => {
     res.json({ progress: progress || null });
   } catch (error) {
     console.error('Get progress error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== TRASH API =====
+
+// List trash items
+app.get('/api/trash', requireAuth, (req, res) => {
+  try {
+    const items = db.prepare('SELECT * FROM trash ORDER BY deleted_at DESC').all();
+    res.json({ items });
+  } catch (error) {
+    console.error('List trash error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Restore from trash
+app.post('/api/trash/restore', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.body;
+    if (!id) return res.status(400).json({ error: 'id required' });
+
+    const item = db.prepare('SELECT * FROM trash WHERE id = ?').get(id);
+    if (!item) return res.status(404).json({ error: 'Trash item not found' });
+
+    const trashFullPath = path.join(trashDir, item.trash_path);
+    if (!fs.existsSync(trashFullPath)) {
+      db.prepare('DELETE FROM trash WHERE id = ?').run(id);
+      return res.status(404).json({ error: 'File no longer exists in trash' });
+    }
+
+    const restorePath = sanitizePath(item.original_path);
+    const restoreDir = path.dirname(restorePath);
+    if (!fs.existsSync(restoreDir)) {
+      await fs.promises.mkdir(restoreDir, { recursive: true });
+    }
+
+    await fs.promises.rename(trashFullPath, restorePath);
+    db.prepare('DELETE FROM trash WHERE id = ?').run(id);
+
+    res.json({ success: true, restoredPath: item.original_path });
+  } catch (error) {
+    console.error('Restore error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Permanently delete from trash
+app.delete('/api/trash/:id', requireAuth, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const item = db.prepare('SELECT * FROM trash WHERE id = ?').get(id);
+    if (!item) return res.status(404).json({ error: 'Trash item not found' });
+
+    const trashFullPath = path.join(trashDir, item.trash_path);
+    if (fs.existsSync(trashFullPath)) {
+      await fs.promises.unlink(trashFullPath);
+    }
+    db.prepare('DELETE FROM trash WHERE id = ?').run(id);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Permanent delete error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Empty entire trash
+app.post('/api/trash/empty', requireAuth, async (req, res) => {
+  try {
+    const items = db.prepare('SELECT * FROM trash').all();
+    let deleted = 0;
+    for (const item of items) {
+      try {
+        const trashFullPath = path.join(trashDir, item.trash_path);
+        if (fs.existsSync(trashFullPath)) {
+          await fs.promises.unlink(trashFullPath);
+        }
+        deleted++;
+      } catch (e) {
+        console.warn(`Failed to delete trash file: ${item.trash_path}`);
+      }
+    }
+    db.prepare('DELETE FROM trash').run();
+    res.json({ success: true, deleted });
+  } catch (error) {
+    console.error('Empty trash error:', error.message);
     res.status(500).json({ error: error.message });
   }
 });

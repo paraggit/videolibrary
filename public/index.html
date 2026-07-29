@@ -48,6 +48,9 @@
         <button id="create-folder-btn" class="btn-secondary">📁 New Folder</button>
         <button id="upload-files-btn" class="btn-secondary">📤 Upload Files</button>
         <button id="albums-btn" class="btn-secondary">📚 Albums</button>
+        <button id="tags-manage-btn" class="btn-secondary">🏷 Tags</button>
+        <button id="stats-btn" class="btn-secondary">📊 Stats</button>
+        <button id="trash-btn" class="btn-secondary">🗑 Trash <span id="trash-badge" class="badge" style="display:none;">0</span></button>
         <button id="theme-toggle-btn" class="btn-secondary" title="Toggle Theme">🌓 Theme</button>
         <div class="view-toggle">
           <button id="grid-view-btn" class="btn-secondary active" title="Grid View">⊞</button>
@@ -56,6 +59,11 @@
         <button id="selection-mode-btn" class="btn-secondary">☑ Select</button>
         <button id="add-to-album-btn" class="btn-secondary" style="display: none;">➕ Add to Album</button>
         <button id="delete-btn" class="btn-delete" style="display: none;">🗑 Delete</button>
+        <button id="batch-move-btn" class="btn-secondary" style="display: none;">📂 Move To</button>
+        <button id="batch-tag-btn" class="btn-secondary" style="display: none;">🏷 Tag</button>
+        <button id="batch-rate-btn" class="btn-secondary" style="display: none;">⭐ Rate</button>
+        <button id="batch-fav-btn" class="btn-secondary" style="display: none;">♥ Favorite</button>
+        <button id="select-all-btn" class="btn-secondary" style="display: none;">☑ All</button>
         <button id="logout-btn" class="btn-secondary">Logout</button>
       </div>
     </header>
@@ -75,6 +83,30 @@
             <option value="2">2 Stars</option>
             <option value="1">1 Star</option>
           </select>
+          <select id="sort-select" class="rating-filter" style="margin-top: 8px;">
+            <option value="name-asc">Name (A-Z)</option>
+            <option value="name-desc">Name (Z-A)</option>
+            <option value="date-desc" selected>Date (newest)</option>
+            <option value="date-asc">Date (oldest)</option>
+            <option value="size-desc">Size (largest)</option>
+            <option value="size-asc">Size (smallest)</option>
+            <option value="rating-desc">Rating (highest)</option>
+            <option value="rating-asc">Rating (lowest)</option>
+          </select>
+          <div id="advanced-filters" class="advanced-filters">
+            <label class="filter-toggle"><input type="checkbox" id="filter-favorites"> ♥ Favorites only</label>
+            <label class="filter-toggle"><input type="checkbox" id="filter-unseen"> Unseen only</label>
+            <select id="filter-type" class="rating-filter" style="margin-top: 5px;">
+              <option value="">All Types</option>
+              <option value="video">Video</option>
+              <option value="image">Image</option>
+              <option value="audio">Audio</option>
+              <option value="document">Document</option>
+              <option value="archive">Archive</option>
+            </select>
+            <div id="filter-tags-container" class="filter-tags-container"></div>
+            <button id="clear-filters-btn" class="btn-secondary" style="margin-top: 5px; width: 100%; font-size: 0.85em;">Clear Filters</button>
+          </div>
         </div>
 
         <div class="breadcrumb" id="breadcrumb">
@@ -88,6 +120,10 @@
 
       <!-- Content Area -->
       <main class="content-area">
+        <div class="content-actions" id="content-actions" style="display:none;">
+          <button id="play-all-btn" class="btn-secondary btn-sm">▶ Play All</button>
+          <button id="add-all-queue-btn" class="btn-secondary btn-sm">+ Queue All</button>
+        </div>
         <div id="video-list" class="video-list">
           <div class="empty-state">
             <p>Select a folder to view videos</p>
@@ -106,6 +142,8 @@
               <span class="star" data-value="4">★</span>
               <span class="star" data-value="5">★</span>
             </div>
+            <button id="player-fav-btn" class="btn-fav" title="Toggle Favorite">♡</button>
+            <div id="player-tags-container" class="player-tags"></div>
           </div>
           <video id="video-player" controls></video>
           <div class="video-controls">
@@ -122,8 +160,27 @@
               <option value="2">2x</option>
             </select>
             <button id="fullscreen-btn" class="btn-secondary">⛶ Fullscreen</button>
+            <button id="pip-btn" class="btn-secondary" title="Picture-in-Picture">⧉ PiP</button>
+            <button id="subtitle-toggle-btn" class="btn-secondary" style="display:none;" title="Toggle Subtitles">CC</button>
+            <select id="subtitle-select" class="playback-speed-select" style="display:none;"></select>
+            <button id="queue-toggle-btn" class="btn-secondary" title="Toggle Queue">☰ Queue</button>
             <button id="delete-video-btn" class="btn-delete" title="Delete this video">🗑 Delete</button>
             <button id="next-media-btn" class="btn-secondary" title="Next (Right Arrow)">Next ⏭</button>
+          </div>
+          <div id="queue-panel" class="queue-panel" style="display:none;">
+            <div class="queue-header">
+              <h3>Queue</h3>
+              <div>
+                <button id="queue-shuffle-btn" class="btn-secondary btn-sm">🔀</button>
+                <button id="queue-clear-btn" class="btn-secondary btn-sm">Clear</button>
+              </div>
+            </div>
+            <div id="queue-list" class="queue-list"></div>
+          </div>
+          <div id="autoplay-countdown" class="autoplay-countdown" style="display:none;">
+            <p>Next: <span id="countdown-title"></span></p>
+            <p>Playing in <span id="countdown-seconds">3</span>s</p>
+            <button id="countdown-cancel" class="btn-secondary btn-sm">Cancel</button>
           </div>
         </div>
       </main>
@@ -135,6 +192,19 @@
       <div id="file-count"></div>
     </footer>
   </div>
+
+    <!-- Resume Toast -->
+    <div id="resume-toast" class="toast" style="display:none;">
+      <p>Resume from <span id="resume-time"></span>?</p>
+      <button id="resume-yes" class="btn-primary btn-sm">Resume</button>
+      <button id="resume-no" class="btn-secondary btn-sm">Start Over</button>
+    </div>
+
+    <!-- Undo Delete Toast -->
+    <div id="undo-toast" class="toast" style="display:none;">
+      <p>File moved to trash</p>
+      <button id="undo-restore-btn" class="btn-primary btn-sm">Undo</button>
+    </div>
 
   <!-- Rename Modal -->
   <div id="rename-modal" class="modal" style="display: none;">
@@ -232,6 +302,100 @@
           <button id="album-delete-btn" class="btn-delete">Delete Album</button>
         </div>
         <div id="album-videos-list" class="video-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tags Manager Modal -->
+  <div id="tags-modal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Manage Tags</h3>
+        <button id="tags-modal-close" class="btn-close">✕</button>
+      </div>
+      <div class="tag-create-row">
+        <input type="text" id="new-tag-name" class="modal-input" placeholder="Tag name" style="margin-bottom:0; flex:1;">
+        <input type="color" id="new-tag-color" value="#667eea" style="width:40px; height:38px; border:none; cursor:pointer;">
+        <button id="create-tag-btn" class="btn-primary" style="width:auto;">Add</button>
+      </div>
+      <div id="tags-list" class="tags-list"></div>
+    </div>
+  </div>
+
+  <!-- Stats Dashboard Modal -->
+  <div id="stats-modal" class="modal" style="display: none;">
+    <div class="modal-content modal-large">
+      <div class="modal-header">
+        <h2>📊 Library Stats</h2>
+        <button id="stats-modal-close" class="btn-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="stats-summary" class="stats-summary"></div>
+        <h3>File Types</h3>
+        <div id="stats-types" class="stats-bars"></div>
+        <h3>Top Folders by Size</h3>
+        <div id="stats-folders"></div>
+        <h3>Largest Files</h3>
+        <div id="stats-files"></div>
+        <h3>Format Distribution</h3>
+        <div id="stats-formats"></div>
+        <hr style="border-color: rgba(255,255,255,0.1); margin: 20px 0;">
+        <button id="find-duplicates-btn" class="btn-secondary">🔍 Find Duplicates</button>
+        <div id="duplicates-results" style="margin-top: 15px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Trash View Modal -->
+  <div id="trash-modal" class="modal" style="display: none;">
+    <div class="modal-content modal-large">
+      <div class="modal-header">
+        <h2>🗑 Trash</h2>
+        <button id="trash-modal-close" class="btn-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <button id="empty-trash-btn" class="btn-delete">Empty Trash</button>
+        <div id="trash-list" style="margin-top: 15px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Folder Picker Modal (for batch move) -->
+  <div id="folder-picker-modal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <h3>Move To Folder</h3>
+      <div id="folder-tree" class="folder-tree"></div>
+      <div class="modal-actions">
+        <button id="folder-pick-confirm" class="btn-primary">Move Here</button>
+        <button id="folder-pick-cancel" class="btn-secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Batch Rate Modal -->
+  <div id="batch-rate-modal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <h3>Rate Selected Files</h3>
+      <div class="video-rating batch-rating">
+        <span class="star batch-star" data-value="1">★</span>
+        <span class="star batch-star" data-value="2">★</span>
+        <span class="star batch-star" data-value="3">★</span>
+        <span class="star batch-star" data-value="4">★</span>
+        <span class="star batch-star" data-value="5">★</span>
+      </div>
+      <div class="modal-actions">
+        <button id="batch-rate-cancel" class="btn-secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Batch Tag Modal -->
+  <div id="batch-tag-modal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <h3>Tag Selected Files</h3>
+      <div id="batch-tag-list"></div>
+      <div class="modal-actions">
+        <button id="batch-tag-cancel" class="btn-secondary">Cancel</button>
       </div>
     </div>
   </div>

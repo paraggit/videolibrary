@@ -575,6 +575,19 @@ Path: ${file.path}`;
         });
     });
 
+    // Right-click to add to queue
+    document.querySelectorAll('.video-item').forEach(item => {
+        item.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            const path = item.dataset.path;
+            const name = item.querySelector('.video-name').textContent;
+            const type = item.dataset.type;
+            if (type === 'video' || !type) {
+                addToQueue({ name, path, type: 'video' });
+            }
+        });
+    });
+
     // Update file count
     fileCount.textContent = `${files.length} file${files.length !== 1 ? 's' : ''}`;
 }
@@ -635,6 +648,28 @@ Path: ${file.path}`;
 
     videoPlayer.play();
 
+    // Resume check
+    await checkAndShowResume(path);
+
+    // Start progress tracking
+    startProgressTracking();
+
+    // Load subtitles
+    loadSubtitles(path);
+
+    // Update favorite button state
+    if (playerFavBtn) {
+        const isFav = favoritesSet.has(path);
+        playerFavBtn.textContent = isFav ? '♥' : '♡';
+        playerFavBtn.classList.toggle('favorited', isFav);
+    }
+
+    // Load tags for player
+    loadPlayerTags(path);
+
+    // Update queue highlight
+    updateQueueHighlight();
+
     // Update navigation button states
     updateNavigationButtons();
     statusMessage.textContent = `Playing: ${name}`;
@@ -642,6 +677,7 @@ Path: ${file.path}`;
 
 // Close video player
 function closeVideoPlayer() {
+    stopProgressTracking();
     videoPlayer.pause();
     videoPlayer.src = '';
     videoPlayerContainer.style.display = 'none';
@@ -1048,6 +1084,9 @@ async function deleteSelectedFiles() {
             selectionMode = false;
             updateSelectionUI();
 
+            showUndoToast(data.lastTrashId);
+            updateTrashBadge();
+
             // Reload current directory
             if (isSearchMode) {
                 performSearch(searchInput.value);
@@ -1104,6 +1143,9 @@ async function deleteCurrentVideo() {
 
             // Close video player
             closeVideoPlayer();
+
+            showUndoToast(data.lastTrashId);
+            updateTrashBadge();
 
             // Check if there's a next video to play
             if (currentMediaIndex < currentMediaList.length - 1) {
@@ -1998,42 +2040,614 @@ function selectAllFiles() {
     updateCheckboxes();
 }
 
-// ===== PLACEHOLDER FUNCTIONS (Implemented in Task 10) =====
+// ===== RESUME PLAYBACK =====
 
-function showStats() {
-    console.log('Stats feature - implemented in Task 10');
+function startProgressTracking() {
+    stopProgressTracking();
+    progressSaveTimer = setInterval(async () => {
+        if (videoPlayer && !videoPlayer.paused && videoPlayer.duration > 0) {
+            const pct = (videoPlayer.currentTime / videoPlayer.duration) * 100;
+            if (pct >= 95) {
+                db_deleteProgress(currentVideoPath);
+                return;
+            }
+            try {
+                await fetch('/api/progress', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
+                    body: JSON.stringify({ video_path: currentVideoPath, current_time: videoPlayer.currentTime, duration: videoPlayer.duration })
+                });
+            } catch (e) { /* ignore */ }
+        }
+    }, 5000);
 }
 
-function showTrash() {
-    console.log('Trash feature - implemented in Task 10');
+function stopProgressTracking() {
+    if (progressSaveTimer) { clearInterval(progressSaveTimer); progressSaveTimer = null; }
 }
 
-function updateTrashBadge() {
-    // Implemented in Task 10
+async function db_deleteProgress(videoPath) {
+    try {
+        await fetch('/api/progress', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
+            body: JSON.stringify({ video_path: videoPath, current_time: 0, duration: 1 })
+        });
+    } catch (e) { /* ignore */ }
+}
+
+function formatTime(seconds) {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+async function checkAndShowResume(videoPath) {
+    try {
+        const res = await fetch(`/api/progress?video_path=${encodeURIComponent(videoPath)}`, { credentials: 'same-origin' });
+        const data = await res.json();
+        if (data.progress && data.progress.current_time > 5) {
+            const pct = (data.progress.current_time / data.progress.duration) * 100;
+            if (pct < 95) {
+                return new Promise(resolve => {
+                    const toast = document.getElementById('resume-toast');
+                    document.getElementById('resume-time').textContent = formatTime(data.progress.current_time);
+                    toast.style.display = 'flex';
+                    document.getElementById('resume-yes').onclick = () => { toast.style.display = 'none'; videoPlayer.currentTime = data.progress.current_time; resolve(); };
+                    document.getElementById('resume-no').onclick = () => { toast.style.display = 'none'; resolve(); };
+                });
+            }
+        }
+    } catch (e) { /* ignore */ }
+}
+
+// ===== SUBTITLES =====
+
+async function loadSubtitles(videoPath) {
+    const subtitleBtn = document.getElementById('subtitle-toggle-btn');
+    const subtitleSelect = document.getElementById('subtitle-select');
+
+    // Remove existing tracks
+    videoPlayer.querySelectorAll('track').forEach(t => t.remove());
+
+    try {
+        const res = await fetch(`/api/subtitles?video_path=${encodeURIComponent(videoPath)}`, { credentials: 'same-origin' });
+        const data = await res.json();
+
+        if (data.subtitles.length === 0) {
+            if (subtitleBtn) subtitleBtn.style.display = 'none';
+            if (subtitleSelect) subtitleSelect.style.display = 'none';
+            return;
+        }
+
+        if (subtitleBtn) subtitleBtn.style.display = 'inline-block';
+
+        if (data.subtitles.length > 1 && subtitleSelect) {
+            subtitleSelect.style.display = 'inline-block';
+            subtitleSelect.innerHTML = data.subtitles.map((s, i) =>
+                `<option value="${i}">${escapeHtml(s.language)} (${s.format})</option>`
+            ).join('');
+            subtitleSelect.onchange = () => {
+                const idx = parseInt(subtitleSelect.value);
+                const tracks = videoPlayer.textTracks;
+                for (let i = 0; i < tracks.length; i++) {
+                    tracks[i].mode = i === idx ? 'showing' : 'hidden';
+                }
+            };
+        }
+
+        data.subtitles.forEach((sub, i) => {
+            const track = document.createElement('track');
+            track.kind = 'subtitles';
+            track.label = sub.language;
+            track.srclang = sub.language;
+            track.src = `/api/subtitle/file?path=${encodeURIComponent(sub.path)}`;
+            if (i === 0) track.default = true;
+            videoPlayer.appendChild(track);
+        });
+
+        let subtitlesVisible = false;
+        if (subtitleBtn) {
+            subtitleBtn.onclick = () => {
+                subtitlesVisible = !subtitlesVisible;
+                const tracks = videoPlayer.textTracks;
+                for (let i = 0; i < tracks.length; i++) {
+                    tracks[i].mode = subtitlesVisible ? (i === 0 ? 'showing' : 'hidden') : 'hidden';
+                }
+                subtitleBtn.classList.toggle('active', subtitlesVisible);
+            };
+        }
+    } catch (e) { console.error('Subtitles error:', e); }
+}
+
+async function loadPlayerTags(videoPath) {
+    if (!playerTagsContainer) return;
+    try {
+        const res = await fetch(`/api/video/tags?video_path=${encodeURIComponent(videoPath)}`, { credentials: 'same-origin' });
+        const data = await res.json();
+        playerTagsContainer.innerHTML = data.tags.map(t =>
+            `<span class="tag-chip"  style="background:${t.color}">${escapeHtml(t.name)}</span>`
+        ).join('') + `<span class="tag-chip tag-chip-removable" style="background:rgba(255,255,255,0.2);cursor:pointer;" id="add-tag-to-video">+ Tag</span>`;
+        document.getElementById('add-tag-to-video').onclick = () => showAddTagToVideo(videoPath);
+    } catch (e) { playerTagsContainer.innerHTML = ''; }
+}
+
+async function showAddTagToVideo(videoPath) {
+    await loadAllTags();
+    const existingRes = await fetch(`/api/video/tags?video_path=${encodeURIComponent(videoPath)}`, { credentials: 'same-origin' });
+    const existingData = await existingRes.json();
+    const existingIds = new Set(existingData.tags.map(t => t.id));
+
+    const available = allTags.filter(t => !existingIds.has(t.id));
+    if (available.length === 0) { alert('All tags already applied. Create more in Tags Manager.'); return; }
+
+    const tagId = await new Promise(resolve => {
+        const modal = document.getElementById('batch-tag-modal');
+        const list = document.getElementById('batch-tag-list');
+        list.innerHTML = available.map(t =>
+            `<div class="album-select-item" data-id="${t.id}"><span class="tag-chip" style="background:${t.color}">${escapeHtml(t.name)}</span></div>`
+        ).join('');
+        modal.style.display = 'flex';
+        list.querySelectorAll('.album-select-item').forEach(el => {
+            el.onclick = () => { modal.style.display = 'none'; resolve(parseInt(el.dataset.id)); };
+        });
+        document.getElementById('batch-tag-cancel').onclick = () => { modal.style.display = 'none'; resolve(null); };
+    });
+
+    if (tagId) {
+        await fetch('/api/video/tags', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ video_path: videoPath, tag_id: tagId }) });
+        loadPlayerTags(videoPath);
+        refreshDisplay();
+    }
+}
+
+// ===== VIDEO QUEUE =====
+
+function saveQueue() {
+    sessionStorage.setItem('videoQueue', JSON.stringify(videoQueue));
+}
+
+function addToQueue(file) {
+    if (!videoQueue.find(q => q.path === file.path)) {
+        videoQueue.push({ name: file.name, path: file.path, type: file.type || 'video' });
+        saveQueue();
+        renderQueue();
+        statusMessage.textContent = `Added to queue: ${file.name}`;
+    }
 }
 
 function playAll() {
-    console.log('Play All feature - implemented in Task 10');
+    const videos = currentMediaList.filter(f => f.type === 'video' || !f.type);
+    videoQueue = videos.map(f => ({ name: f.name, path: f.path, type: 'video' }));
+    queueIndex = 0;
+    saveQueue();
+    renderQueue();
+    if (videoQueue.length > 0) playVideo(videoQueue[0].path, videoQueue[0].name);
 }
 
 function addAllToQueue() {
-    console.log('Add All to Queue feature - implemented in Task 10');
+    const videos = currentMediaList.filter(f => f.type === 'video' || !f.type);
+    let added = 0;
+    for (const f of videos) {
+        if (!videoQueue.find(q => q.path === f.path)) {
+            videoQueue.push({ name: f.name, path: f.path, type: 'video' });
+            added++;
+        }
+    }
+    saveQueue();
+    renderQueue();
+    statusMessage.textContent = `Added ${added} videos to queue`;
 }
 
-function showFolderPicker() {
-    console.log('Folder Picker feature - implemented in Task 10');
+function renderQueue() {
+    const queueList = document.getElementById('queue-list');
+    if (!queueList) return;
+    queueList.innerHTML = videoQueue.map((item, i) =>
+        `<div class="queue-item ${i === queueIndex ? 'playing' : ''}" draggable="true" data-index="${i}">
+            <span>${escapeHtml(item.name)}</span>
+            <span class="queue-remove" data-index="${i}">&times;</span>
+        </div>`
+    ).join('') || '<div class="empty-state" style="padding:20px;">Queue is empty</div>';
+
+    queueList.querySelectorAll('.queue-remove').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const idx = parseInt(btn.dataset.index);
+            videoQueue.splice(idx, 1);
+            if (queueIndex >= idx && queueIndex > 0) queueIndex--;
+            saveQueue();
+            renderQueue();
+        });
+    });
+
+    queueList.querySelectorAll('.queue-item').forEach(item => {
+        item.addEventListener('click', () => {
+            const idx = parseInt(item.dataset.index);
+            queueIndex = idx;
+            playVideo(videoQueue[idx].path, videoQueue[idx].name);
+        });
+
+        item.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', item.dataset.index); });
+        item.addEventListener('dragover', (e) => e.preventDefault());
+        item.addEventListener('drop', (e) => {
+            e.preventDefault();
+            const fromIdx = parseInt(e.dataTransfer.getData('text/plain'));
+            const toIdx = parseInt(item.dataset.index);
+            const [moved] = videoQueue.splice(fromIdx, 1);
+            videoQueue.splice(toIdx, 0, moved);
+            saveQueue();
+            renderQueue();
+        });
+    });
 }
 
-function showBatchTagModal() {
-    console.log('Batch Tag feature - implemented in Task 10');
+function updateQueueHighlight() {
+    const idx = videoQueue.findIndex(q => q.path === currentVideoPath);
+    if (idx >= 0) queueIndex = idx;
+    renderQueue();
+}
+
+function setupAutoAdvance() {
+    videoPlayer.addEventListener('ended', () => {
+        if (videoQueue.length > 0 && queueIndex < videoQueue.length - 1) {
+            showAutoplayCountdown();
+        }
+    });
+}
+
+function showAutoplayCountdown() {
+    const countdown = document.getElementById('autoplay-countdown');
+    const titleEl = document.getElementById('countdown-title');
+    const secondsEl = document.getElementById('countdown-seconds');
+    const cancelBtn = document.getElementById('countdown-cancel');
+
+    const nextIdx = queueIndex + 1;
+    if (nextIdx >= videoQueue.length) return;
+
+    titleEl.textContent = videoQueue[nextIdx].name;
+    let seconds = 3;
+    secondsEl.textContent = seconds;
+    countdown.style.display = 'block';
+
+    autoplayTimer = setInterval(() => {
+        seconds--;
+        secondsEl.textContent = seconds;
+        if (seconds <= 0) {
+            clearInterval(autoplayTimer);
+            countdown.style.display = 'none';
+            queueIndex = nextIdx;
+            playVideo(videoQueue[nextIdx].path, videoQueue[nextIdx].name);
+        }
+    }, 1000);
+
+    cancelBtn.onclick = () => {
+        clearInterval(autoplayTimer);
+        countdown.style.display = 'none';
+    };
+}
+
+// Init queue toggle
+(function initQueueControls() {
+    const queueToggle = document.getElementById('queue-toggle-btn');
+    const queuePanel = document.getElementById('queue-panel');
+    const queueShuffleBtn = document.getElementById('queue-shuffle-btn');
+    const queueClearBtn = document.getElementById('queue-clear-btn');
+
+    if (queueToggle && queuePanel) {
+        queueToggle.addEventListener('click', () => {
+            queuePanel.style.display = queuePanel.style.display === 'none' ? 'flex' : 'none';
+        });
+    }
+    if (queueShuffleBtn) {
+        queueShuffleBtn.addEventListener('click', () => {
+            for (let i = videoQueue.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [videoQueue[i], videoQueue[j]] = [videoQueue[j], videoQueue[i]];
+            }
+            saveQueue();
+            renderQueue();
+        });
+    }
+    if (queueClearBtn) {
+        queueClearBtn.addEventListener('click', () => {
+            videoQueue = [];
+            queueIndex = -1;
+            saveQueue();
+            renderQueue();
+        });
+    }
+})();
+
+setupAutoAdvance();
+
+// ===== PICTURE-IN-PICTURE =====
+
+(function initPiP() {
+    const pipBtn = document.getElementById('pip-btn');
+    if (!pipBtn) return;
+
+    if (!document.pictureInPictureEnabled) {
+        pipBtn.style.display = 'none';
+        return;
+    }
+
+    pipBtn.addEventListener('click', async () => {
+        try {
+            if (document.pictureInPictureElement) {
+                await document.exitPictureInPicture();
+            } else {
+                await videoPlayer.requestPictureInPicture();
+            }
+        } catch (e) {
+            console.error('PiP error:', e);
+            statusMessage.textContent = 'Picture-in-Picture not available';
+        }
+    });
+
+    videoPlayer.addEventListener('enterpictureinpicture', () => {
+        pipBtn.classList.add('active');
+        statusMessage.textContent = 'Picture-in-Picture active';
+    });
+    videoPlayer.addEventListener('leavepictureinpicture', () => {
+        pipBtn.classList.remove('active');
+        statusMessage.textContent = 'Ready';
+    });
+})();
+
+// ===== TRASH VIEW =====
+
+async function updateTrashBadge() {
+    try {
+        const res = await fetch('/api/trash', { credentials: 'same-origin' });
+        if (res.ok) {
+            const data = await res.json();
+            if (trashBadge) {
+                trashBadge.textContent = data.items.length;
+                trashBadge.style.display = data.items.length > 0 ? 'inline' : 'none';
+            }
+        }
+    } catch (e) { /* ignore */ }
+}
+
+async function showTrash() {
+    document.getElementById('trash-modal').style.display = 'flex';
+    document.getElementById('trash-modal-close').onclick = () => document.getElementById('trash-modal').style.display = 'none';
+
+    try {
+        const res = await fetch('/api/trash', { credentials: 'same-origin' });
+        const data = await res.json();
+        const trashList = document.getElementById('trash-list');
+
+        if (data.items.length === 0) {
+            trashList.innerHTML = '<div class="empty-state">Trash is empty</div>';
+            return;
+        }
+
+        trashList.innerHTML = data.items.map(item => `
+            <div class="trash-item" data-id="${item.id}">
+                <div class="trash-item-info">
+                    <div class="trash-item-name">${escapeHtml(item.original_name)}</div>
+                    <div class="trash-item-meta">From: ${escapeHtml(item.original_path)} | ${formatFileSize(item.size || 0)} | Deleted: ${formatDate(item.deleted_at)}</div>
+                </div>
+                <div class="trash-item-actions">
+                    <button class="btn-secondary btn-sm trash-restore" data-id="${item.id}">Restore</button>
+                    <button class="btn-delete btn-sm trash-delete" data-id="${item.id}">Delete</button>
+                </div>
+            </div>
+        `).join('');
+
+        trashList.querySelectorAll('.trash-restore').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                await fetch('/api/trash/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ id: parseInt(btn.dataset.id) }) });
+                showTrash();
+                updateTrashBadge();
+                loadDirectory(currentPath);
+            });
+        });
+        trashList.querySelectorAll('.trash-delete').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                if (!confirm('Permanently delete this file?')) return;
+                await fetch(`/api/trash/${btn.dataset.id}`, { method: 'DELETE', credentials: 'same-origin' });
+                showTrash();
+                updateTrashBadge();
+            });
+        });
+    } catch (e) { console.error('Trash load error:', e); }
+
+    document.getElementById('empty-trash-btn').onclick = async () => {
+        if (!confirm('Permanently delete all trash items? This cannot be undone.')) return;
+        await fetch('/api/trash/empty', { method: 'POST', credentials: 'same-origin' });
+        showTrash();
+        updateTrashBadge();
+    };
+}
+
+function showUndoToast(trashId) {
+    if (!trashId) return;
+    const toast = document.getElementById('undo-toast');
+    toast.style.display = 'flex';
+    const timeout = setTimeout(() => { toast.style.display = 'none'; }, 5000);
+    document.getElementById('undo-restore-btn').onclick = async () => {
+        clearTimeout(timeout);
+        toast.style.display = 'none';
+        await fetch('/api/trash/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ id: trashId }) });
+        updateTrashBadge();
+        if (isSearchMode) performSearch(searchInput.value); else loadDirectory(currentPath);
+        statusMessage.textContent = 'File restored from trash';
+    };
+}
+
+// ===== BATCH OPERATIONS =====
+
+async function showFolderPicker() {
+    if (selectedFiles.size === 0) { alert('Select files first'); return; }
+    const modal = document.getElementById('folder-picker-modal');
+    modal.style.display = 'flex';
+    document.getElementById('folder-pick-cancel').onclick = () => modal.style.display = 'none';
+
+    let selectedFolder = '';
+    const tree = document.getElementById('folder-tree');
+
+    async function loadFolderTree(parentPath = '') {
+        const res = await fetch(`/api/browse?path=${encodeURIComponent(parentPath)}`, { credentials: 'same-origin' });
+        const data = await res.json();
+        return data.folders || [];
+    }
+
+    async function renderTree() {
+        const folders = await loadFolderTree('');
+        tree.innerHTML = `<div class="folder-tree-item ${selectedFolder === '' ? 'selected' : ''}" data-path="">📁 Root</div>` +
+            folders.map(f => `<div class="folder-tree-item ${selectedFolder === f.path ? 'selected' : ''}" data-path="${escapeHtml(f.path)}">📁 ${escapeHtml(f.name)}</div>`).join('');
+        tree.querySelectorAll('.folder-tree-item').forEach(el => {
+            el.addEventListener('click', () => {
+                selectedFolder = el.dataset.path;
+                tree.querySelectorAll('.folder-tree-item').forEach(e => e.classList.remove('selected'));
+                el.classList.add('selected');
+            });
+        });
+    }
+
+    await renderTree();
+
+    document.getElementById('folder-pick-confirm').onclick = async () => {
+        modal.style.display = 'none';
+        const res = await fetch('/api/video/move', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
+            body: JSON.stringify({ paths: Array.from(selectedFiles), destination: selectedFolder })
+        });
+        const data = await res.json();
+        statusMessage.textContent = `Moved ${data.moved} files`;
+        selectedFiles.clear();
+        selectionMode = false;
+        updateSelectionUI();
+        loadDirectory(currentPath);
+    };
+}
+
+async function showBatchTagModal() {
+    if (selectedFiles.size === 0) { alert('Select files first'); return; }
+    await loadAllTags();
+    const modal = document.getElementById('batch-tag-modal');
+    const list = document.getElementById('batch-tag-list');
+    list.innerHTML = allTags.map(t =>
+        `<div class="album-select-item" data-id="${t.id}"><span class="tag-chip" style="background:${t.color}">${escapeHtml(t.name)}</span></div>`
+    ).join('') || '<div class="empty-state">No tags. Create tags in Tags Manager first.</div>';
+    modal.style.display = 'flex';
+    list.querySelectorAll('.album-select-item').forEach(el => {
+        el.onclick = async () => {
+            modal.style.display = 'none';
+            await fetch('/api/video/batch-tag', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ paths: Array.from(selectedFiles), tag_id: parseInt(el.dataset.id) }) });
+            statusMessage.textContent = `Tagged ${selectedFiles.size} files`;
+            loadDirectory(currentPath);
+        };
+    });
+    document.getElementById('batch-tag-cancel').onclick = () => modal.style.display = 'none';
 }
 
 function showBatchRateModal() {
-    console.log('Batch Rate feature - implemented in Task 10');
+    if (selectedFiles.size === 0) { alert('Select files first'); return; }
+    const modal = document.getElementById('batch-rate-modal');
+    modal.style.display = 'flex';
+    const stars = modal.querySelectorAll('.batch-star');
+    stars.forEach(star => {
+        star.addEventListener('mouseover', () => {
+            const val = parseInt(star.dataset.value);
+            stars.forEach(s => s.classList.toggle('hovered', parseInt(s.dataset.value) <= val));
+        });
+        star.addEventListener('mouseout', () => stars.forEach(s => s.classList.remove('hovered')));
+        star.addEventListener('click', async () => {
+            modal.style.display = 'none';
+            await fetch('/api/video/batch-rate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ paths: Array.from(selectedFiles), rating: parseInt(star.dataset.value) }) });
+            statusMessage.textContent = `Rated ${selectedFiles.size} files`;
+            loadDirectory(currentPath);
+        });
+    });
+    document.getElementById('batch-rate-cancel').onclick = () => modal.style.display = 'none';
 }
 
-function batchToggleFavorite() {
-    console.log('Batch Favorite feature - implemented in Task 10');
+async function batchToggleFavorite() {
+    if (selectedFiles.size === 0) { alert('Select files first'); return; }
+    const res = await fetch('/api/video/batch-favorite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ paths: Array.from(selectedFiles) }) });
+    const data = await res.json();
+    statusMessage.textContent = `${data.added} favorited, ${data.removed} unfavorited`;
+    await loadFavorites();
+    loadDirectory(currentPath);
+}
+
+// ===== STATS & DUPLICATES =====
+
+async function showStats() {
+    document.getElementById('stats-modal').style.display = 'flex';
+    document.getElementById('stats-modal-close').onclick = () => document.getElementById('stats-modal').style.display = 'none';
+
+    try {
+        const res = await fetch('/api/stats', { credentials: 'same-origin' });
+        const stats = await res.json();
+
+        document.getElementById('stats-summary').innerHTML = `
+            <div class="stat-card"><div class="stat-value">${stats.totalFiles}</div><div class="stat-label">Total Files</div></div>
+            <div class="stat-card"><div class="stat-value">${formatFileSize(stats.totalSize)}</div><div class="stat-label">Total Size</div></div>
+            <div class="stat-card"><div class="stat-value">${stats.trashCount}</div><div class="stat-label">In Trash</div></div>
+            <div class="stat-card"><div class="stat-value">${formatFileSize(stats.trashSize)}</div><div class="stat-label">Trash Size</div></div>
+        `;
+
+        const maxTypeSize = Math.max(...Object.values(stats.byType).map(t => t.size), 1);
+        document.getElementById('stats-types').innerHTML = Object.entries(stats.byType)
+            .sort((a, b) => b[1].size - a[1].size)
+            .map(([type, data]) => `
+                <div class="stats-bar-row">
+                    <span class="stats-bar-label">${type}</span>
+                    <div class="stats-bar-track"><div class="stats-bar-fill" style="width:${(data.size / maxTypeSize * 100).toFixed(1)}%"></div></div>
+                    <span class="stats-bar-value">${data.count} files (${formatFileSize(data.size)})</span>
+                </div>
+            `).join('');
+
+        document.getElementById('stats-folders').innerHTML = stats.topFolders
+            .map(f => `<div class="trash-item"><div class="trash-item-info"><div class="trash-item-name">📁 ${escapeHtml(f.name)}</div><div class="trash-item-meta">${f.count} files, ${formatFileSize(f.size)}</div></div></div>`).join('');
+
+        document.getElementById('stats-files').innerHTML = stats.topFiles
+            .map(f => `<div class="trash-item"><div class="trash-item-info"><div class="trash-item-name">${escapeHtml(f.name)}</div><div class="trash-item-meta">${escapeHtml(f.path)} | ${formatFileSize(f.size)}</div></div></div>`).join('');
+
+        document.getElementById('stats-formats').innerHTML = Object.entries(stats.byExtension)
+            .sort((a, b) => b[1] - a[1])
+            .map(([ext, count]) => `<span class="tag-chip" style="background:rgba(102,126,234,0.3)">${ext} (${count})</span>`)
+            .join(' ');
+
+    } catch (e) { console.error('Stats error:', e); }
+
+    document.getElementById('find-duplicates-btn').onclick = async () => {
+        const resultsDiv = document.getElementById('duplicates-results');
+        resultsDiv.innerHTML = '<div class="loading">Scanning for duplicates...</div>';
+        try {
+            const res = await fetch('/api/duplicates', { credentials: 'same-origin' });
+            const data = await res.json();
+            if (data.groups.length === 0) {
+                resultsDiv.innerHTML = '<div class="empty-state">No duplicates found</div>';
+                return;
+            }
+            resultsDiv.innerHTML = `<p>Found ${data.totalGroups} potential duplicate groups:</p>` +
+                data.groups.map(group => `
+                    <div class="duplicate-group">
+                        <div class="duplicate-group-header">${escapeHtml(group.type)}: ${escapeHtml(group.criterion)}</div>
+                        ${group.files.map(f => `
+                            <div class="duplicate-file">
+                                <div><strong>${escapeHtml(f.name)}</strong><br><span style="color:#888;font-size:0.8em">${escapeHtml(f.path)} | ${formatFileSize(f.size)}</span></div>
+                                <button class="btn-delete btn-sm dup-delete" data-path="${escapeHtml(f.path)}">Delete</button>
+                            </div>
+                        `).join('')}
+                    </div>
+                `).join('');
+
+            resultsDiv.querySelectorAll('.dup-delete').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    if (!confirm(`Delete ${btn.dataset.path}?`)) return;
+                    await fetch('/api/video', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ path: btn.dataset.path }) });
+                    updateTrashBadge();
+                    document.getElementById('find-duplicates-btn').click();
+                });
+            });
+        } catch (e) {
+            resultsDiv.innerHTML = '<div class="error">Failed to scan for duplicates</div>';
+        }
+    };
 }
 
 // Initialize on load

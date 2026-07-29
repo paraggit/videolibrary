@@ -1805,7 +1805,7 @@ async function createFolder() {
             statusMessage.textContent = `Folder "${folderName}" created successfully`;
             createFolderModal.style.display = 'none';
             // Refresh the folder list
-            loadFolders(currentPath);
+            loadDirectory(currentPath);
         } else {
             alert(`Error: ${result.error}`);
         }
@@ -1868,7 +1868,7 @@ async function uploadFiles() {
                 uploadFilesModal.style.display = 'none';
                 uploadStartBtn.disabled = false;
                 // Refresh the file list
-                loadVideos(currentPath);
+                loadDirectory(currentPath);
             }, 1500);
         } else {
             alert(`Error: ${result.error}`);

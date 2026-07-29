@@ -17,6 +17,12 @@ if (config.enableThumbnails && !fs.existsSync(thumbnailsDir)) {
   fs.mkdirSync(thumbnailsDir, { recursive: true });
 }
 
+// Setup trash directory
+const trashDir = path.join(config.videoDirectory, '.trash');
+if (!fs.existsSync(trashDir)) {
+  fs.mkdirSync(trashDir, { recursive: true });
+}
+
 const app = express();
 const PORT = config.port || 3000;
 const HOST = config.host || '127.0.0.1';
@@ -76,12 +82,77 @@ function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_album_videos_video_path ON album_videos(video_path);
     CREATE INDEX IF NOT EXISTS idx_video_ratings_video_path ON video_ratings(video_path);
     CREATE INDEX IF NOT EXISTS idx_video_history_video_path ON video_history(video_path);
+
+    CREATE TABLE IF NOT EXISTS tags (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      color TEXT DEFAULT '#667eea',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS video_tags (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      video_path TEXT NOT NULL,
+      tag_id INTEGER NOT NULL,
+      FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE,
+      UNIQUE(video_path, tag_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS favorites (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      video_path TEXT NOT NULL UNIQUE,
+      added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS watch_progress (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      video_path TEXT NOT NULL UNIQUE,
+      current_time REAL NOT NULL DEFAULT 0,
+      duration REAL NOT NULL DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS trash (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      original_path TEXT NOT NULL,
+      trash_path TEXT NOT NULL,
+      original_name TEXT NOT NULL,
+      size INTEGER,
+      deleted_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_video_tags_video_path ON video_tags(video_path);
+    CREATE INDEX IF NOT EXISTS idx_video_tags_tag_id ON video_tags(tag_id);
+    CREATE INDEX IF NOT EXISTS idx_favorites_video_path ON favorites(video_path);
+    CREATE INDEX IF NOT EXISTS idx_watch_progress_video_path ON watch_progress(video_path);
+    CREATE INDEX IF NOT EXISTS idx_trash_original_path ON trash(original_path);
   `);
 
   console.log('✅ Database initialized:', dbPath);
 }
 
 initializeDatabase();
+
+// Auto-purge old trash items
+(function purgeOldTrash() {
+  const retentionDays = Math.max(1, parseInt(config.trashRetentionDays) || 30);
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+  const oldItems = db.prepare('SELECT id, trash_path FROM trash WHERE deleted_at < ?').all(cutoff);
+  for (const item of oldItems) {
+    try {
+      const fullTrashPath = path.join(trashDir, item.trash_path);
+      if (fs.existsSync(fullTrashPath)) {
+        fs.unlinkSync(fullTrashPath);
+      }
+      db.prepare('DELETE FROM trash WHERE id = ?').run(item.id);
+    } catch (e) {
+      console.warn(`Failed to purge trash item ${item.id}:`, e.message);
+    }
+  }
+  if (oldItems.length > 0) {
+    console.log(`Purged ${oldItems.length} old trash items (>${retentionDays} days)`);
+  }
+})();
 
 // Middleware to parse JSON and URL-encoded data
 app.use(express.json());
@@ -298,6 +369,34 @@ async function readDirectoryRecursive(dirPath, currentDepth = 0) {
       ratingsMap.set(r.video_path, r.rating);
     }
 
+    // Pre-fetch all favorites
+    const favList = db.prepare('SELECT video_path FROM favorites').all();
+    const favSet = new Set(favList.map(f => f.video_path));
+
+    // Pre-fetch all video tags with tag details
+    const tagsList = db.prepare(`
+      SELECT vt.video_path, t.id as tag_id, t.name, t.color
+      FROM video_tags vt JOIN tags t ON vt.tag_id = t.id
+    `).all();
+    const tagsMap = new Map();
+    for (const t of tagsList) {
+      if (!tagsMap.has(t.video_path)) tagsMap.set(t.video_path, []);
+      tagsMap.get(t.video_path).push({ id: t.tag_id, name: t.name, color: t.color });
+    }
+
+    // Pre-fetch watch progress
+    const progressList = db.prepare('SELECT video_path, current_time, duration FROM watch_progress').all();
+    const progressMap = new Map();
+    for (const p of progressList) {
+      if (p.duration > 0) {
+        progressMap.set(p.video_path, Math.round((p.current_time / p.duration) * 100));
+      }
+    }
+
+    // Pre-fetch seen history
+    const historyList = db.prepare('SELECT video_path FROM video_history').all();
+    const seenSet = new Set(historyList.map(h => h.video_path));
+
     for (const item of items) {
       const itemPath = path.join(dirPath, item.name);
       const relativePath = path.relative(config.videoDirectory, itemPath);
@@ -320,7 +419,11 @@ async function readDirectoryRecursive(dirPath, currentDepth = 0) {
           type: getFileType(item.name),
           size: stats.size,
           modified: stats.mtime,
-          rating: ratingsMap.get(relativePath) || 0
+          rating: ratingsMap.get(relativePath) || 0,
+          favorite: favSet.has(relativePath),
+          tags: tagsMap.get(relativePath) || [],
+          progress: progressMap.get(relativePath) ?? null,
+          seen: seenSet.has(relativePath)
         });
       }
     }
@@ -457,6 +560,30 @@ async function searchVideosRecursive(startPath, query, ratingFilter = '0', maxRe
   const historyList = db.prepare('SELECT video_path FROM video_history').all();
   const seenSet = new Set(historyList.map(h => h.video_path));
 
+  // Pre-fetch all favorites
+  const favList = db.prepare('SELECT video_path FROM favorites').all();
+  const favSet = new Set(favList.map(f => f.video_path));
+
+  // Pre-fetch all video tags with tag details
+  const tagsList = db.prepare(`
+    SELECT vt.video_path, t.id as tag_id, t.name, t.color
+    FROM video_tags vt JOIN tags t ON vt.tag_id = t.id
+  `).all();
+  const tagsMap = new Map();
+  for (const t of tagsList) {
+    if (!tagsMap.has(t.video_path)) tagsMap.set(t.video_path, []);
+    tagsMap.get(t.video_path).push({ id: t.tag_id, name: t.name, color: t.color });
+  }
+
+  // Pre-fetch watch progress
+  const progressList = db.prepare('SELECT video_path, current_time, duration FROM watch_progress').all();
+  const progressMap = new Map();
+  for (const p of progressList) {
+    if (p.duration > 0) {
+      progressMap.set(p.video_path, Math.round((p.current_time / p.duration) * 100));
+    }
+  }
+
   async function searchDir(dirPath, depth = 0) {
     if (depth > config.maxRecursionDepth || results.length >= maxResults) {
       return;
@@ -500,7 +627,10 @@ async function searchVideosRecursive(startPath, query, ratingFilter = '0', maxRe
               size: stats.size,
               modified: stats.mtime,
               rating: rating,
-              seen: isSeen
+              seen: isSeen,
+              favorite: favSet.has(relativePath),
+              tags: tagsMap.get(relativePath) || [],
+              progress: progressMap.get(relativePath) ?? null
             });
           }
         }
@@ -616,52 +746,56 @@ app.get('/api/thumbnail', requireAuth, async (req, res) => {
   }
 });
 
-// Delete video file(s)
+// Delete video file(s) - moves to trash instead of permanent deletion
 app.delete('/api/video', requireAuth, async (req, res) => {
   try {
     const { path: singlePath, paths: multiplePaths } = req.body;
-
-    // Support both single and multiple file deletion
     const pathsToDelete = multiplePaths || (singlePath ? [singlePath] : []);
 
     if (pathsToDelete.length === 0) {
       return res.status(400).json({ error: 'No files specified for deletion' });
     }
 
-    const results = {
-      deleted: [],
-      failed: []
-    };
+    const results = { deleted: [], failed: [] };
+    const trashIds = [];
 
     for (const filePath of pathsToDelete) {
       try {
         const fullPath = sanitizePath(filePath);
-
-        // Verify file exists
         const stats = await fs.promises.stat(fullPath);
         if (!stats.isFile()) {
           results.failed.push({ path: filePath, error: 'Invalid file' });
           continue;
         }
 
-        // Delete the file
-        await fs.promises.unlink(fullPath);
-        results.deleted.push(filePath);
-        console.log(`Deleted file: ${filePath}`);
+        const fileName = path.basename(fullPath);
+        const trashFileName = `${Date.now()}_${fileName}`;
+        const trashFullPath = path.join(trashDir, trashFileName);
 
+        await fs.promises.rename(fullPath, trashFullPath);
+
+        const insertResult = db.prepare(`INSERT INTO trash (original_path, trash_path, original_name, size) VALUES (?, ?, ?, ?)`)
+          .run(filePath, trashFileName, fileName, stats.size);
+
+        trashIds.push(insertResult.lastInsertRowid);
+        results.deleted.push(filePath);
+        console.log(`Moved to trash: ${filePath}`);
       } catch (error) {
-        console.error(`Failed to delete ${filePath}:`, error.message);
+        console.error(`Failed to trash ${filePath}:`, error.message);
         results.failed.push({ path: filePath, error: error.message });
       }
     }
+
+    const lastTrashId = trashIds.length > 0 ? trashIds[trashIds.length - 1] : null;
 
     res.json({
       success: true,
       deleted: results.deleted.length,
       failed: results.failed.length,
-      details: results
+      details: results,
+      lastTrashId: lastTrashId,
+      trashIds: trashIds
     });
-
   } catch (error) {
     console.error('Delete error:', error.message);
     res.status(500).json({ error: error.message });
@@ -1050,6 +1184,583 @@ app.delete('/api/albums/:id/videos', requireAuth, (req, res) => {
 
   } catch (error) {
     console.error('Remove video from album error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== TAGS API =====
+
+// Get all tags
+app.get('/api/tags', requireAuth, (req, res) => {
+  try {
+    const tags = db.prepare('SELECT * FROM tags ORDER BY name').all();
+    res.json({ tags });
+  } catch (error) {
+    console.error('Get tags error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create a tag
+app.post('/api/tags', requireAuth, (req, res) => {
+  try {
+    const { name, color } = req.body;
+    if (!name || name.trim().length === 0) {
+      return res.status(400).json({ error: 'Tag name required' });
+    }
+    // Validate color format
+    const colorValue = color || '#667eea';
+    if (!/^#[0-9a-fA-F]{6}$/.test(colorValue)) {
+      return res.status(400).json({ error: 'Invalid color format. Must be #RRGGBB' });
+    }
+    const result = db.prepare('INSERT INTO tags (name, color) VALUES (?, ?)')
+      .run(name.trim(), colorValue);
+    const tag = db.prepare('SELECT * FROM tags WHERE id = ?').get(result.lastInsertRowid);
+    res.json({ success: true, tag });
+  } catch (error) {
+    if (error.message.includes('UNIQUE constraint')) {
+      return res.status(400).json({ error: 'Tag name already exists' });
+    }
+    console.error('Create tag error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete a tag
+app.delete('/api/tags/:id', requireAuth, (req, res) => {
+  try {
+    const tagId = parseInt(req.params.id);
+    db.prepare('DELETE FROM tags WHERE id = ?').run(tagId);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete tag error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get tags for a video
+app.get('/api/video/tags', requireAuth, (req, res) => {
+  try {
+    const { video_path } = req.query;
+    if (!video_path) {
+      return res.status(400).json({ error: 'video_path parameter required' });
+    }
+    const tags = db.prepare(`
+      SELECT t.* FROM tags t
+      JOIN video_tags vt ON t.id = vt.tag_id
+      WHERE vt.video_path = ?
+      ORDER BY t.name
+    `).all(video_path);
+    res.json({ tags });
+  } catch (error) {
+    console.error('Get video tags error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add tag to a video
+app.post('/api/video/tags', requireAuth, (req, res) => {
+  try {
+    const { video_path, tag_id } = req.body;
+    if (!video_path || !tag_id) {
+      return res.status(400).json({ error: 'video_path and tag_id required' });
+    }
+    db.prepare('INSERT OR IGNORE INTO video_tags (video_path, tag_id) VALUES (?, ?)')
+      .run(video_path, tag_id);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Add video tag error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Remove tag from a video
+app.delete('/api/video/tags', requireAuth, (req, res) => {
+  try {
+    const { video_path, tag_id } = req.body;
+    if (!video_path || !tag_id) {
+      return res.status(400).json({ error: 'video_path and tag_id required' });
+    }
+    db.prepare('DELETE FROM video_tags WHERE video_path = ? AND tag_id = ?')
+      .run(video_path, tag_id);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Remove video tag error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== FAVORITES API =====
+
+// Toggle favorite
+app.post('/api/favorite', requireAuth, (req, res) => {
+  try {
+    const { video_path } = req.body;
+    if (!video_path) {
+      return res.status(400).json({ error: 'video_path required' });
+    }
+    const existing = db.prepare('SELECT id FROM favorites WHERE video_path = ?').get(video_path);
+    if (existing) {
+      db.prepare('DELETE FROM favorites WHERE video_path = ?').run(video_path);
+      res.json({ success: true, favorited: false });
+    } else {
+      db.prepare('INSERT INTO favorites (video_path) VALUES (?)').run(video_path);
+      res.json({ success: true, favorited: true });
+    }
+  } catch (error) {
+    console.error('Favorite toggle error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get all favorites
+app.get('/api/favorites', requireAuth, (req, res) => {
+  try {
+    const favorites = db.prepare('SELECT video_path FROM favorites').all();
+    res.json({ favorites: favorites.map(f => f.video_path) });
+  } catch (error) {
+    console.error('Get favorites error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== WATCH PROGRESS API =====
+
+// Save watch progress
+app.post('/api/progress', requireAuth, (req, res) => {
+  try {
+    const { video_path, current_time, duration } = req.body;
+    if (!video_path || current_time === undefined || !duration) {
+      return res.status(400).json({ error: 'video_path, current_time, and duration required' });
+    }
+    db.prepare(`
+      INSERT INTO watch_progress (video_path, current_time, duration, updated_at)
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(video_path) DO UPDATE SET
+        current_time = ?, duration = ?, updated_at = CURRENT_TIMESTAMP
+    `).run(video_path, current_time, duration, current_time, duration);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Save progress error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get watch progress
+app.get('/api/progress', requireAuth, (req, res) => {
+  try {
+    const { video_path } = req.query;
+    if (!video_path) {
+      return res.status(400).json({ error: 'video_path parameter required' });
+    }
+    const progress = db.prepare('SELECT current_time, duration FROM watch_progress WHERE video_path = ?').get(video_path);
+    res.json({ progress: progress || null });
+  } catch (error) {
+    console.error('Get progress error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== TRASH API =====
+
+// List trash items
+app.get('/api/trash', requireAuth, (req, res) => {
+  try {
+    const items = db.prepare('SELECT * FROM trash ORDER BY deleted_at DESC').all();
+    res.json({ items });
+  } catch (error) {
+    console.error('List trash error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Restore from trash
+app.post('/api/trash/restore', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.body;
+    if (!id) return res.status(400).json({ error: 'id required' });
+
+    const item = db.prepare('SELECT * FROM trash WHERE id = ?').get(id);
+    if (!item) return res.status(404).json({ error: 'Trash item not found' });
+
+    const trashFullPath = path.join(trashDir, item.trash_path);
+    if (!fs.existsSync(trashFullPath)) {
+      db.prepare('DELETE FROM trash WHERE id = ?').run(id);
+      return res.status(404).json({ error: 'File no longer exists in trash' });
+    }
+
+    const restorePath = sanitizePath(item.original_path);
+    const restoreDir = path.dirname(restorePath);
+    if (!fs.existsSync(restoreDir)) {
+      await fs.promises.mkdir(restoreDir, { recursive: true });
+    }
+
+    await fs.promises.rename(trashFullPath, restorePath);
+    db.prepare('DELETE FROM trash WHERE id = ?').run(id);
+
+    res.json({ success: true, restoredPath: item.original_path });
+  } catch (error) {
+    console.error('Restore error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Permanently delete from trash
+app.delete('/api/trash/:id', requireAuth, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const item = db.prepare('SELECT * FROM trash WHERE id = ?').get(id);
+    if (!item) return res.status(404).json({ error: 'Trash item not found' });
+
+    const trashFullPath = path.join(trashDir, item.trash_path);
+    if (fs.existsSync(trashFullPath)) {
+      await fs.promises.unlink(trashFullPath);
+    }
+    db.prepare('DELETE FROM trash WHERE id = ?').run(id);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Permanent delete error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Empty entire trash
+app.post('/api/trash/empty', requireAuth, async (req, res) => {
+  try {
+    const items = db.prepare('SELECT * FROM trash').all();
+    let deleted = 0;
+    for (const item of items) {
+      try {
+        const trashFullPath = path.join(trashDir, item.trash_path);
+        if (fs.existsSync(trashFullPath)) {
+          await fs.promises.unlink(trashFullPath);
+        }
+        deleted++;
+      } catch (e) {
+        console.warn(`Failed to delete trash file: ${item.trash_path}`);
+      }
+    }
+    db.prepare('DELETE FROM trash').run();
+    res.json({ success: true, deleted });
+  } catch (error) {
+    console.error('Empty trash error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== SUBTITLE API =====
+
+// Get available subtitles for a video
+app.get('/api/subtitles', requireAuth, (req, res) => {
+  try {
+    const videoPath = req.query.video_path;
+    if (!videoPath) return res.status(400).json({ error: 'video_path required' });
+
+    const fullPath = sanitizePath(videoPath);
+    const dir = path.dirname(fullPath);
+    const baseName = path.basename(fullPath, path.extname(fullPath));
+    const subtitleExts = ['.srt', '.vtt', '.ass'];
+    const subtitles = [];
+
+    if (fs.existsSync(dir)) {
+      const files = fs.readdirSync(dir);
+      for (const file of files) {
+        const ext = path.extname(file).toLowerCase();
+        if (subtitleExts.includes(ext) && file.startsWith(baseName)) {
+          const remaining = file.slice(baseName.length, -ext.length);
+          const lang = remaining.replace(/^\./, '') || 'default';
+          subtitles.push({
+            filename: file,
+            path: path.relative(config.videoDirectory, path.join(dir, file)),
+            language: lang,
+            format: ext.slice(1)
+          });
+        }
+      }
+    }
+
+    res.json({ subtitles });
+  } catch (error) {
+    console.error('Subtitles error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Serve subtitle file (convert SRT to WebVTT on the fly)
+app.get('/api/subtitle/file', requireAuth, (req, res) => {
+  try {
+    const subPath = req.query.path;
+    if (!subPath) return res.status(400).json({ error: 'path required' });
+
+    const fullPath = sanitizePath(subPath);
+    if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'Subtitle not found' });
+
+    const ext = path.extname(fullPath).toLowerCase();
+    // Validate subtitle file extension
+    if (!['.srt', '.vtt', '.ass'].includes(ext)) {
+      return res.status(400).json({ error: 'Invalid subtitle file type' });
+    }
+    let content = fs.readFileSync(fullPath, 'utf8');
+
+    if (ext === '.srt') {
+      content = 'WEBVTT\n\n' + content
+        .replace(/\r\n/g, '\n')
+        .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
+      res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+    } else if (ext === '.vtt') {
+      res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+    } else {
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    }
+
+    res.send(content);
+  } catch (error) {
+    console.error('Subtitle file error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== BATCH OPERATIONS API =====
+
+// Move files to a different folder
+app.post('/api/video/move', requireAuth, async (req, res) => {
+  try {
+    const { paths, destination } = req.body;
+    if (!paths || !paths.length || destination === undefined) {
+      return res.status(400).json({ error: 'paths and destination required' });
+    }
+
+    const destFullPath = sanitizePath(destination);
+    if (!fs.existsSync(destFullPath) || !(await fs.promises.stat(destFullPath)).isDirectory()) {
+      return res.status(400).json({ error: 'Destination folder does not exist' });
+    }
+
+    const results = { moved: [], failed: [] };
+    for (const filePath of paths) {
+      try {
+        const srcFullPath = sanitizePath(filePath);
+        const fileName = path.basename(srcFullPath);
+        const newFullPath = path.join(destFullPath, fileName);
+
+        if (fs.existsSync(newFullPath)) {
+          results.failed.push({ path: filePath, error: 'File already exists at destination' });
+          continue;
+        }
+
+        await fs.promises.rename(srcFullPath, newFullPath);
+        const newRelPath = path.relative(config.videoDirectory, newFullPath);
+
+        // Update DB references
+        db.prepare('UPDATE album_videos SET video_path = ? WHERE video_path = ?').run(newRelPath, filePath);
+        db.prepare('UPDATE video_ratings SET video_path = ? WHERE video_path = ?').run(newRelPath, filePath);
+        db.prepare('UPDATE video_history SET video_path = ? WHERE video_path = ?').run(newRelPath, filePath);
+        db.prepare('UPDATE video_tags SET video_path = ? WHERE video_path = ?').run(newRelPath, filePath);
+        db.prepare('UPDATE favorites SET video_path = ? WHERE video_path = ?').run(newRelPath, filePath);
+        db.prepare('UPDATE watch_progress SET video_path = ? WHERE video_path = ?').run(newRelPath, filePath);
+
+        results.moved.push({ from: filePath, to: newRelPath });
+      } catch (error) {
+        results.failed.push({ path: filePath, error: error.message });
+      }
+    }
+
+    res.json({ success: true, moved: results.moved.length, failed: results.failed.length, details: results });
+  } catch (error) {
+    console.error('Move error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Batch add tag
+app.post('/api/video/batch-tag', requireAuth, (req, res) => {
+  try {
+    const { paths, tag_id } = req.body;
+    if (!paths || !paths.length || !tag_id) {
+      return res.status(400).json({ error: 'paths and tag_id required' });
+    }
+    let added = 0;
+    for (const p of paths) {
+      try {
+        db.prepare('INSERT OR IGNORE INTO video_tags (video_path, tag_id) VALUES (?, ?)').run(p, tag_id);
+        added++;
+      } catch (e) { /* ignore duplicates */ }
+    }
+    res.json({ success: true, added });
+  } catch (error) {
+    console.error('Batch tag error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Batch rate
+app.post('/api/video/batch-rate', requireAuth, (req, res) => {
+  try {
+    const { paths, rating } = req.body;
+    if (!paths || !paths.length || !rating) {
+      return res.status(400).json({ error: 'paths and rating required' });
+    }
+    const parsedRating = parseInt(rating, 10);
+    if (isNaN(parsedRating) || parsedRating < 1 || parsedRating > 5) {
+      return res.status(400).json({ error: 'rating must be 1-5' });
+    }
+    for (const p of paths) {
+      db.prepare(`
+        INSERT INTO video_ratings (video_path, rating, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(video_path) DO UPDATE SET rating = ?, updated_at = CURRENT_TIMESTAMP
+      `).run(p, parsedRating, parsedRating);
+    }
+    res.json({ success: true, count: paths.length });
+  } catch (error) {
+    console.error('Batch rate error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Batch favorite toggle
+app.post('/api/video/batch-favorite', requireAuth, (req, res) => {
+  try {
+    const { paths } = req.body;
+    if (!paths || !paths.length) {
+      return res.status(400).json({ error: 'paths required' });
+    }
+    let added = 0, removed = 0;
+    for (const p of paths) {
+      const existing = db.prepare('SELECT id FROM favorites WHERE video_path = ?').get(p);
+      if (existing) {
+        db.prepare('DELETE FROM favorites WHERE video_path = ?').run(p);
+        removed++;
+      } else {
+        db.prepare('INSERT INTO favorites (video_path) VALUES (?)').run(p);
+        added++;
+      }
+    }
+    res.json({ success: true, added, removed });
+  } catch (error) {
+    console.error('Batch favorite error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== STATS API =====
+
+app.get('/api/stats', requireAuth, async (req, res) => {
+  try {
+    const stats = {
+      totalFiles: 0, totalSize: 0,
+      byType: {}, byExtension: {},
+      topFiles: [], topFolders: {},
+      trashCount: 0, trashSize: 0
+    };
+
+    async function scanDir(dirPath, depth = 0) {
+      if (depth > config.maxRecursionDepth) return;
+      try {
+        const items = await fs.promises.readdir(dirPath, { withFileTypes: true });
+        for (const item of items) {
+          if (item.name.startsWith('.')) continue;
+          const itemPath = path.join(dirPath, item.name);
+          if (item.isDirectory()) {
+            await scanDir(itemPath, depth + 1);
+          } else if (item.isFile()) {
+            const fileStat = await fs.promises.stat(itemPath);
+            const relPath = path.relative(config.videoDirectory, itemPath);
+            const fileType = getFileType(item.name);
+            const ext = path.extname(item.name).toLowerCase();
+            const folder = path.dirname(relPath) || 'Root';
+
+            stats.totalFiles++;
+            stats.totalSize += fileStat.size;
+
+            if (!stats.byType[fileType]) stats.byType[fileType] = { count: 0, size: 0 };
+            stats.byType[fileType].count++;
+            stats.byType[fileType].size += fileStat.size;
+
+            if (!stats.byExtension[ext]) stats.byExtension[ext] = 0;
+            stats.byExtension[ext]++;
+
+            if (!stats.topFolders[folder]) stats.topFolders[folder] = { count: 0, size: 0 };
+            stats.topFolders[folder].count++;
+            stats.topFolders[folder].size += fileStat.size;
+
+            stats.topFiles.push({ name: item.name, path: relPath, size: fileStat.size });
+          }
+        }
+      } catch (e) { /* skip unreadable dirs */ }
+    }
+
+    await scanDir(config.videoDirectory);
+
+    stats.topFiles.sort((a, b) => b.size - a.size);
+    stats.topFiles = stats.topFiles.slice(0, 10);
+
+    const folderArr = Object.entries(stats.topFolders)
+      .map(([name, data]) => ({ name, ...data }))
+      .sort((a, b) => b.size - a.size)
+      .slice(0, 10);
+    stats.topFolders = folderArr;
+
+    const trashItems = db.prepare('SELECT size FROM trash').all();
+    stats.trashCount = trashItems.length;
+    stats.trashSize = trashItems.reduce((sum, i) => sum + (i.size || 0), 0);
+
+    res.json(stats);
+  } catch (error) {
+    console.error('Stats error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== DUPLICATES API =====
+
+app.get('/api/duplicates', requireAuth, async (req, res) => {
+  try {
+    const fileMap = new Map();
+
+    async function scanDir(dirPath, depth = 0) {
+      if (depth > config.maxRecursionDepth) return;
+      try {
+        const items = await fs.promises.readdir(dirPath, { withFileTypes: true });
+        for (const item of items) {
+          if (item.name.startsWith('.')) continue;
+          const itemPath = path.join(dirPath, item.name);
+          if (item.isDirectory()) {
+            await scanDir(itemPath, depth + 1);
+          } else if (item.isFile()) {
+            const fileStat = await fs.promises.stat(itemPath);
+            const relPath = path.relative(config.videoDirectory, itemPath);
+            const ext = path.extname(item.name).toLowerCase();
+            const nameKey = `name:${item.name.toLowerCase()}`;
+            const sizeKey = `size:${fileStat.size}:${ext}`;
+
+            const entry = { name: item.name, path: relPath, size: fileStat.size, modified: fileStat.mtime };
+
+            if (!fileMap.has(nameKey)) fileMap.set(nameKey, []);
+            fileMap.get(nameKey).push(entry);
+
+            if (!fileMap.has(sizeKey)) fileMap.set(sizeKey, []);
+            fileMap.get(sizeKey).push(entry);
+          }
+        }
+      } catch (e) { /* skip unreadable dirs */ }
+    }
+
+    await scanDir(config.videoDirectory);
+
+    const groups = [];
+    const seen = new Set();
+    for (const [key, files] of fileMap) {
+      if (files.length < 2) continue;
+      const groupKey = files.map(f => f.path).sort().join('|');
+      if (seen.has(groupKey)) continue;
+      seen.add(groupKey);
+      const type = key.startsWith('name:') ? 'same-name' : 'same-size';
+      groups.push({ type, criterion: key.split(':').slice(1).join(':'), files });
+    }
+
+    res.json({ groups, totalGroups: groups.length });
+  } catch (error) {
+    console.error('Duplicates error:', error.message);
     res.status(500).json({ error: error.message });
   }
 });

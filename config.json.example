@@ -26,6 +26,7 @@
         ".bmp",
         ".svg"
     ],
+    "trashRetentionDays": 30,
     "https": {
         "enabled": false,
         "port": 3443,

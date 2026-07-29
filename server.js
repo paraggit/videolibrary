@@ -369,6 +369,30 @@ async function readDirectoryRecursive(dirPath, currentDepth = 0) {
       ratingsMap.set(r.video_path, r.rating);
     }
 
+    // Pre-fetch all favorites
+    const favList = db.prepare('SELECT video_path FROM favorites').all();
+    const favSet = new Set(favList.map(f => f.video_path));
+
+    // Pre-fetch all video tags with tag details
+    const tagsList = db.prepare(`
+      SELECT vt.video_path, t.id as tag_id, t.name, t.color
+      FROM video_tags vt JOIN tags t ON vt.tag_id = t.id
+    `).all();
+    const tagsMap = new Map();
+    for (const t of tagsList) {
+      if (!tagsMap.has(t.video_path)) tagsMap.set(t.video_path, []);
+      tagsMap.get(t.video_path).push({ id: t.tag_id, name: t.name, color: t.color });
+    }
+
+    // Pre-fetch watch progress
+    const progressList = db.prepare('SELECT video_path, current_time, duration FROM watch_progress').all();
+    const progressMap = new Map();
+    for (const p of progressList) {
+      if (p.duration > 0) {
+        progressMap.set(p.video_path, Math.round((p.current_time / p.duration) * 100));
+      }
+    }
+
     for (const item of items) {
       const itemPath = path.join(dirPath, item.name);
       const relativePath = path.relative(config.videoDirectory, itemPath);
@@ -391,7 +415,10 @@ async function readDirectoryRecursive(dirPath, currentDepth = 0) {
           type: getFileType(item.name),
           size: stats.size,
           modified: stats.mtime,
-          rating: ratingsMap.get(relativePath) || 0
+          rating: ratingsMap.get(relativePath) || 0,
+          favorite: favSet.has(relativePath),
+          tags: tagsMap.get(relativePath) || [],
+          progress: progressMap.get(relativePath) ?? null
         });
       }
     }
@@ -528,6 +555,30 @@ async function searchVideosRecursive(startPath, query, ratingFilter = '0', maxRe
   const historyList = db.prepare('SELECT video_path FROM video_history').all();
   const seenSet = new Set(historyList.map(h => h.video_path));
 
+  // Pre-fetch all favorites
+  const favList = db.prepare('SELECT video_path FROM favorites').all();
+  const favSet = new Set(favList.map(f => f.video_path));
+
+  // Pre-fetch all video tags with tag details
+  const tagsList = db.prepare(`
+    SELECT vt.video_path, t.id as tag_id, t.name, t.color
+    FROM video_tags vt JOIN tags t ON vt.tag_id = t.id
+  `).all();
+  const tagsMap = new Map();
+  for (const t of tagsList) {
+    if (!tagsMap.has(t.video_path)) tagsMap.set(t.video_path, []);
+    tagsMap.get(t.video_path).push({ id: t.tag_id, name: t.name, color: t.color });
+  }
+
+  // Pre-fetch watch progress
+  const progressList = db.prepare('SELECT video_path, current_time, duration FROM watch_progress').all();
+  const progressMap = new Map();
+  for (const p of progressList) {
+    if (p.duration > 0) {
+      progressMap.set(p.video_path, Math.round((p.current_time / p.duration) * 100));
+    }
+  }
+
   async function searchDir(dirPath, depth = 0) {
     if (depth > config.maxRecursionDepth || results.length >= maxResults) {
       return;
@@ -571,7 +622,10 @@ async function searchVideosRecursive(startPath, query, ratingFilter = '0', maxRe
               size: stats.size,
               modified: stats.mtime,
               rating: rating,
-              seen: isSeen
+              seen: isSeen,
+              favorite: favSet.has(relativePath),
+              tags: tagsMap.get(relativePath) || [],
+              progress: progressMap.get(relativePath) ?? null
             });
           }
         }

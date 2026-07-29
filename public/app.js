@@ -678,6 +678,7 @@ Path: ${file.path}`;
 // Close video player
 function closeVideoPlayer() {
     stopProgressTracking();
+    if (autoplayTimer) { clearInterval(autoplayTimer); autoplayTimer = null; }
     videoPlayer.pause();
     videoPlayer.src = '';
     videoPlayerContainer.style.display = 'none';
@@ -2123,7 +2124,7 @@ async function loadSubtitles(videoPath) {
         if (data.subtitles.length > 1 && subtitleSelect) {
             subtitleSelect.style.display = 'inline-block';
             subtitleSelect.innerHTML = data.subtitles.map((s, i) =>
-                `<option value="${i}">${escapeHtml(s.language)} (${s.format})</option>`
+                `<option value="${i}">${escapeHtml(s.language)} (${escapeHtml(s.format)})</option>`
             ).join('');
             subtitleSelect.onchange = () => {
                 const idx = parseInt(subtitleSelect.value);
@@ -2164,7 +2165,7 @@ async function loadPlayerTags(videoPath) {
         const res = await fetch(`/api/video/tags?video_path=${encodeURIComponent(videoPath)}`, { credentials: 'same-origin' });
         const data = await res.json();
         playerTagsContainer.innerHTML = data.tags.map(t =>
-            `<span class="tag-chip"  style="background:${t.color}">${escapeHtml(t.name)}</span>`
+            `<span class="tag-chip" style="background:${t.color}">${escapeHtml(t.name)}</span>`
         ).join('') + `<span class="tag-chip tag-chip-removable" style="background:rgba(255,255,255,0.2);cursor:pointer;" id="add-tag-to-video">+ Tag</span>`;
         document.getElementById('add-tag-to-video').onclick = () => showAddTagToVideo(videoPath);
     } catch (e) { playerTagsContainer.innerHTML = ''; }
@@ -2594,7 +2595,7 @@ async function showStats() {
             .sort((a, b) => b[1].size - a[1].size)
             .map(([type, data]) => `
                 <div class="stats-bar-row">
-                    <span class="stats-bar-label">${type}</span>
+                    <span class="stats-bar-label">${escapeHtml(type)}</span>
                     <div class="stats-bar-track"><div class="stats-bar-fill" style="width:${(data.size / maxTypeSize * 100).toFixed(1)}%"></div></div>
                     <span class="stats-bar-value">${data.count} files (${formatFileSize(data.size)})</span>
                 </div>

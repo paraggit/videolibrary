@@ -1125,6 +1125,103 @@ app.delete('/api/albums/:id/videos', requireAuth, (req, res) => {
   }
 });
 
+// ===== TAGS API =====
+
+// Get all tags
+app.get('/api/tags', requireAuth, (req, res) => {
+  try {
+    const tags = db.prepare('SELECT * FROM tags ORDER BY name').all();
+    res.json({ tags });
+  } catch (error) {
+    console.error('Get tags error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create a tag
+app.post('/api/tags', requireAuth, (req, res) => {
+  try {
+    const { name, color } = req.body;
+    if (!name || name.trim().length === 0) {
+      return res.status(400).json({ error: 'Tag name required' });
+    }
+    const result = db.prepare('INSERT INTO tags (name, color) VALUES (?, ?)')
+      .run(name.trim(), color || '#667eea');
+    const tag = db.prepare('SELECT * FROM tags WHERE id = ?').get(result.lastInsertRowid);
+    res.json({ success: true, tag });
+  } catch (error) {
+    if (error.message.includes('UNIQUE constraint')) {
+      return res.status(400).json({ error: 'Tag name already exists' });
+    }
+    console.error('Create tag error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete a tag
+app.delete('/api/tags/:id', requireAuth, (req, res) => {
+  try {
+    const tagId = parseInt(req.params.id);
+    db.prepare('DELETE FROM tags WHERE id = ?').run(tagId);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete tag error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get tags for a video
+app.get('/api/video/tags', requireAuth, (req, res) => {
+  try {
+    const { video_path } = req.query;
+    if (!video_path) {
+      return res.status(400).json({ error: 'video_path parameter required' });
+    }
+    const tags = db.prepare(`
+      SELECT t.* FROM tags t
+      JOIN video_tags vt ON t.id = vt.tag_id
+      WHERE vt.video_path = ?
+      ORDER BY t.name
+    `).all(video_path);
+    res.json({ tags });
+  } catch (error) {
+    console.error('Get video tags error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add tag to a video
+app.post('/api/video/tags', requireAuth, (req, res) => {
+  try {
+    const { video_path, tag_id } = req.body;
+    if (!video_path || !tag_id) {
+      return res.status(400).json({ error: 'video_path and tag_id required' });
+    }
+    db.prepare('INSERT OR IGNORE INTO video_tags (video_path, tag_id) VALUES (?, ?)')
+      .run(video_path, tag_id);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Add video tag error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Remove tag from a video
+app.delete('/api/video/tags', requireAuth, (req, res) => {
+  try {
+    const { video_path, tag_id } = req.body;
+    if (!video_path || !tag_id) {
+      return res.status(400).json({ error: 'video_path and tag_id required' });
+    }
+    db.prepare('DELETE FROM video_tags WHERE video_path = ? AND tag_id = ?')
+      .run(video_path, tag_id);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Remove video tag error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Stream video file with range request support
 app.get('/api/video', requireAuth, async (req, res) => {
   try {

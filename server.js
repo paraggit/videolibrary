@@ -1222,6 +1222,77 @@ app.delete('/api/video/tags', requireAuth, (req, res) => {
   }
 });
 
+// ===== FAVORITES API =====
+
+// Toggle favorite
+app.post('/api/favorite', requireAuth, (req, res) => {
+  try {
+    const { video_path } = req.body;
+    if (!video_path) {
+      return res.status(400).json({ error: 'video_path required' });
+    }
+    const existing = db.prepare('SELECT id FROM favorites WHERE video_path = ?').get(video_path);
+    if (existing) {
+      db.prepare('DELETE FROM favorites WHERE video_path = ?').run(video_path);
+      res.json({ success: true, favorited: false });
+    } else {
+      db.prepare('INSERT INTO favorites (video_path) VALUES (?)').run(video_path);
+      res.json({ success: true, favorited: true });
+    }
+  } catch (error) {
+    console.error('Favorite toggle error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get all favorites
+app.get('/api/favorites', requireAuth, (req, res) => {
+  try {
+    const favorites = db.prepare('SELECT video_path FROM favorites').all();
+    res.json({ favorites: favorites.map(f => f.video_path) });
+  } catch (error) {
+    console.error('Get favorites error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== WATCH PROGRESS API =====
+
+// Save watch progress
+app.post('/api/progress', requireAuth, (req, res) => {
+  try {
+    const { video_path, current_time, duration } = req.body;
+    if (!video_path || current_time === undefined || !duration) {
+      return res.status(400).json({ error: 'video_path, current_time, and duration required' });
+    }
+    db.prepare(`
+      INSERT INTO watch_progress (video_path, current_time, duration, updated_at)
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(video_path) DO UPDATE SET
+        current_time = ?, duration = ?, updated_at = CURRENT_TIMESTAMP
+    `).run(video_path, current_time, duration, current_time, duration);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Save progress error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get watch progress
+app.get('/api/progress', requireAuth, (req, res) => {
+  try {
+    const { video_path } = req.query;
+    if (!video_path) {
+      return res.status(400).json({ error: 'video_path parameter required' });
+    }
+    const progress = db.prepare('SELECT current_time, duration FROM watch_progress WHERE video_path = ?').get(video_path);
+    res.json({ progress: progress || null });
+  } catch (error) {
+    console.error('Get progress error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Stream video file with range request support
 app.get('/api/video', requireAuth, async (req, res) => {
   try {

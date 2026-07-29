@@ -1384,6 +1384,318 @@ app.post('/api/trash/empty', requireAuth, async (req, res) => {
   }
 });
 
+// ===== SUBTITLE API =====
+
+// Get available subtitles for a video
+app.get('/api/subtitles', requireAuth, (req, res) => {
+  try {
+    const videoPath = req.query.video_path;
+    if (!videoPath) return res.status(400).json({ error: 'video_path required' });
+
+    const fullPath = sanitizePath(videoPath);
+    const dir = path.dirname(fullPath);
+    const baseName = path.basename(fullPath, path.extname(fullPath));
+    const subtitleExts = ['.srt', '.vtt', '.ass'];
+    const subtitles = [];
+
+    if (fs.existsSync(dir)) {
+      const files = fs.readdirSync(dir);
+      for (const file of files) {
+        const ext = path.extname(file).toLowerCase();
+        if (subtitleExts.includes(ext) && file.startsWith(baseName)) {
+          const remaining = file.slice(baseName.length, -ext.length);
+          const lang = remaining.replace(/^\./, '') || 'default';
+          subtitles.push({
+            filename: file,
+            path: path.relative(config.videoDirectory, path.join(dir, file)),
+            language: lang,
+            format: ext.slice(1)
+          });
+        }
+      }
+    }
+
+    res.json({ subtitles });
+  } catch (error) {
+    console.error('Subtitles error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Serve subtitle file (convert SRT to WebVTT on the fly)
+app.get('/api/subtitle/file', requireAuth, (req, res) => {
+  try {
+    const subPath = req.query.path;
+    if (!subPath) return res.status(400).json({ error: 'path required' });
+
+    const fullPath = sanitizePath(subPath);
+    if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'Subtitle not found' });
+
+    const ext = path.extname(fullPath).toLowerCase();
+    let content = fs.readFileSync(fullPath, 'utf8');
+
+    if (ext === '.srt') {
+      content = 'WEBVTT\n\n' + content
+        .replace(/\r\n/g, '\n')
+        .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
+      res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+    } else if (ext === '.vtt') {
+      res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+    } else {
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    }
+
+    res.send(content);
+  } catch (error) {
+    console.error('Subtitle file error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== BATCH OPERATIONS API =====
+
+// Move files to a different folder
+app.post('/api/video/move', requireAuth, async (req, res) => {
+  try {
+    const { paths, destination } = req.body;
+    if (!paths || !paths.length || destination === undefined) {
+      return res.status(400).json({ error: 'paths and destination required' });
+    }
+
+    const destFullPath = sanitizePath(destination);
+    if (!fs.existsSync(destFullPath) || !(await fs.promises.stat(destFullPath)).isDirectory()) {
+      return res.status(400).json({ error: 'Destination folder does not exist' });
+    }
+
+    const results = { moved: [], failed: [] };
+    for (const filePath of paths) {
+      try {
+        const srcFullPath = sanitizePath(filePath);
+        const fileName = path.basename(srcFullPath);
+        const newFullPath = path.join(destFullPath, fileName);
+
+        if (fs.existsSync(newFullPath)) {
+          results.failed.push({ path: filePath, error: 'File already exists at destination' });
+          continue;
+        }
+
+        await fs.promises.rename(srcFullPath, newFullPath);
+        const newRelPath = path.relative(config.videoDirectory, newFullPath);
+
+        // Update DB references
+        db.prepare('UPDATE album_videos SET video_path = ? WHERE video_path = ?').run(newRelPath, filePath);
+        db.prepare('UPDATE video_ratings SET video_path = ? WHERE video_path = ?').run(newRelPath, filePath);
+        db.prepare('UPDATE video_history SET video_path = ? WHERE video_path = ?').run(newRelPath, filePath);
+        db.prepare('UPDATE video_tags SET video_path = ? WHERE video_path = ?').run(newRelPath, filePath);
+        db.prepare('UPDATE favorites SET video_path = ? WHERE video_path = ?').run(newRelPath, filePath);
+        db.prepare('UPDATE watch_progress SET video_path = ? WHERE video_path = ?').run(newRelPath, filePath);
+
+        results.moved.push({ from: filePath, to: newRelPath });
+      } catch (error) {
+        results.failed.push({ path: filePath, error: error.message });
+      }
+    }
+
+    res.json({ success: true, moved: results.moved.length, failed: results.failed.length, details: results });
+  } catch (error) {
+    console.error('Move error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Batch add tag
+app.post('/api/video/batch-tag', requireAuth, (req, res) => {
+  try {
+    const { paths, tag_id } = req.body;
+    if (!paths || !paths.length || !tag_id) {
+      return res.status(400).json({ error: 'paths and tag_id required' });
+    }
+    let added = 0;
+    for (const p of paths) {
+      try {
+        db.prepare('INSERT OR IGNORE INTO video_tags (video_path, tag_id) VALUES (?, ?)').run(p, tag_id);
+        added++;
+      } catch (e) { /* ignore duplicates */ }
+    }
+    res.json({ success: true, added });
+  } catch (error) {
+    console.error('Batch tag error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Batch rate
+app.post('/api/video/batch-rate', requireAuth, (req, res) => {
+  try {
+    const { paths, rating } = req.body;
+    if (!paths || !paths.length || !rating) {
+      return res.status(400).json({ error: 'paths and rating required' });
+    }
+    const parsedRating = parseInt(rating, 10);
+    if (isNaN(parsedRating) || parsedRating < 1 || parsedRating > 5) {
+      return res.status(400).json({ error: 'rating must be 1-5' });
+    }
+    for (const p of paths) {
+      db.prepare(`
+        INSERT INTO video_ratings (video_path, rating, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(video_path) DO UPDATE SET rating = ?, updated_at = CURRENT_TIMESTAMP
+      `).run(p, parsedRating, parsedRating);
+    }
+    res.json({ success: true, count: paths.length });
+  } catch (error) {
+    console.error('Batch rate error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Batch favorite toggle
+app.post('/api/video/batch-favorite', requireAuth, (req, res) => {
+  try {
+    const { paths } = req.body;
+    if (!paths || !paths.length) {
+      return res.status(400).json({ error: 'paths required' });
+    }
+    let added = 0, removed = 0;
+    for (const p of paths) {
+      const existing = db.prepare('SELECT id FROM favorites WHERE video_path = ?').get(p);
+      if (existing) {
+        db.prepare('DELETE FROM favorites WHERE video_path = ?').run(p);
+        removed++;
+      } else {
+        db.prepare('INSERT INTO favorites (video_path) VALUES (?)').run(p);
+        added++;
+      }
+    }
+    res.json({ success: true, added, removed });
+  } catch (error) {
+    console.error('Batch favorite error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== STATS API =====
+
+app.get('/api/stats', requireAuth, async (req, res) => {
+  try {
+    const stats = {
+      totalFiles: 0, totalSize: 0,
+      byType: {}, byExtension: {},
+      topFiles: [], topFolders: {},
+      trashCount: 0, trashSize: 0
+    };
+
+    async function scanDir(dirPath, depth = 0) {
+      if (depth > config.maxRecursionDepth) return;
+      try {
+        const items = await fs.promises.readdir(dirPath, { withFileTypes: true });
+        for (const item of items) {
+          if (item.name.startsWith('.')) continue;
+          const itemPath = path.join(dirPath, item.name);
+          if (item.isDirectory()) {
+            await scanDir(itemPath, depth + 1);
+          } else if (item.isFile()) {
+            const fileStat = await fs.promises.stat(itemPath);
+            const relPath = path.relative(config.videoDirectory, itemPath);
+            const fileType = getFileType(item.name);
+            const ext = path.extname(item.name).toLowerCase();
+            const folder = path.dirname(relPath) || 'Root';
+
+            stats.totalFiles++;
+            stats.totalSize += fileStat.size;
+
+            if (!stats.byType[fileType]) stats.byType[fileType] = { count: 0, size: 0 };
+            stats.byType[fileType].count++;
+            stats.byType[fileType].size += fileStat.size;
+
+            if (!stats.byExtension[ext]) stats.byExtension[ext] = 0;
+            stats.byExtension[ext]++;
+
+            if (!stats.topFolders[folder]) stats.topFolders[folder] = { count: 0, size: 0 };
+            stats.topFolders[folder].count++;
+            stats.topFolders[folder].size += fileStat.size;
+
+            stats.topFiles.push({ name: item.name, path: relPath, size: fileStat.size });
+          }
+        }
+      } catch (e) { /* skip unreadable dirs */ }
+    }
+
+    await scanDir(config.videoDirectory);
+
+    stats.topFiles.sort((a, b) => b.size - a.size);
+    stats.topFiles = stats.topFiles.slice(0, 10);
+
+    const folderArr = Object.entries(stats.topFolders)
+      .map(([name, data]) => ({ name, ...data }))
+      .sort((a, b) => b.size - a.size)
+      .slice(0, 10);
+    stats.topFolders = folderArr;
+
+    const trashItems = db.prepare('SELECT size FROM trash').all();
+    stats.trashCount = trashItems.length;
+    stats.trashSize = trashItems.reduce((sum, i) => sum + (i.size || 0), 0);
+
+    res.json(stats);
+  } catch (error) {
+    console.error('Stats error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== DUPLICATES API =====
+
+app.get('/api/duplicates', requireAuth, async (req, res) => {
+  try {
+    const fileMap = new Map();
+
+    async function scanDir(dirPath, depth = 0) {
+      if (depth > config.maxRecursionDepth) return;
+      try {
+        const items = await fs.promises.readdir(dirPath, { withFileTypes: true });
+        for (const item of items) {
+          if (item.name.startsWith('.')) continue;
+          const itemPath = path.join(dirPath, item.name);
+          if (item.isDirectory()) {
+            await scanDir(itemPath, depth + 1);
+          } else if (item.isFile()) {
+            const fileStat = await fs.promises.stat(itemPath);
+            const relPath = path.relative(config.videoDirectory, itemPath);
+            const ext = path.extname(item.name).toLowerCase();
+            const nameKey = `name:${item.name.toLowerCase()}`;
+            const sizeKey = `size:${fileStat.size}:${ext}`;
+
+            const entry = { name: item.name, path: relPath, size: fileStat.size, modified: fileStat.mtime };
+
+            if (!fileMap.has(nameKey)) fileMap.set(nameKey, []);
+            fileMap.get(nameKey).push(entry);
+
+            if (!fileMap.has(sizeKey)) fileMap.set(sizeKey, []);
+            fileMap.get(sizeKey).push(entry);
+          }
+        }
+      } catch (e) { /* skip unreadable dirs */ }
+    }
+
+    await scanDir(config.videoDirectory);
+
+    const groups = [];
+    const seen = new Set();
+    for (const [key, files] of fileMap) {
+      if (files.length < 2) continue;
+      const groupKey = files.map(f => f.path).sort().join('|');
+      if (seen.has(groupKey)) continue;
+      seen.add(groupKey);
+      const type = key.startsWith('name:') ? 'same-name' : 'same-size';
+      groups.push({ type, criterion: key.split(':').slice(1).join(':'), files });
+    }
+
+    res.json({ groups, totalGroups: groups.length });
+  } catch (error) {
+    console.error('Duplicates error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Stream video file with range request support
 app.get('/api/video', requireAuth, async (req, res) => {
   try {

@@ -48,6 +48,16 @@ let selectedFiles = new Set();
 let currentVideoPath = '';
 let currentVideoName = '';
 
+// Smart Organization state
+let allTags = [];
+let filterTags = new Set();
+let currentSort = localStorage.getItem('videoLibrarySort') || 'date-desc';
+let favoritesSet = new Set();
+let videoQueue = JSON.parse(sessionStorage.getItem('videoQueue') || '[]');
+let queueIndex = -1;
+let autoplayTimer = null;
+let progressSaveTimer = null;
+
 // DOM elements
 const loginScreen = document.getElementById('login-screen');
 const app = document.getElementById('app');
@@ -158,6 +168,28 @@ const uploadProgress = document.getElementById('upload-progress');
 const progressFill = document.getElementById('progress-fill');
 const uploadStatus = document.getElementById('upload-status');
 
+// Advanced feature DOM elements
+const tagsManageBtn = document.getElementById('tags-manage-btn');
+const statsBtn = document.getElementById('stats-btn');
+const trashBtn = document.getElementById('trash-btn');
+const trashBadge = document.getElementById('trash-badge');
+const sortSelect = document.getElementById('sort-select');
+const filterFavorites = document.getElementById('filter-favorites');
+const filterUnseen = document.getElementById('filter-unseen');
+const filterType = document.getElementById('filter-type');
+const filterTagsContainer = document.getElementById('filter-tags-container');
+const clearFiltersBtn = document.getElementById('clear-filters-btn');
+const contentActions = document.getElementById('content-actions');
+const playAllBtn = document.getElementById('play-all-btn');
+const addAllQueueBtn = document.getElementById('add-all-queue-btn');
+const playerFavBtn = document.getElementById('player-fav-btn');
+const playerTagsContainer = document.getElementById('player-tags-container');
+const batchMoveBtn = document.getElementById('batch-move-btn');
+const batchTagBtn = document.getElementById('batch-tag-btn');
+const batchRateBtn = document.getElementById('batch-rate-btn');
+const batchFavBtn = document.getElementById('batch-fav-btn');
+const selectAllBtn = document.getElementById('select-all-btn');
+
 // Initialize app
 function init() {
     // Event listeners
@@ -221,6 +253,31 @@ function init() {
     folderCancelBtn.addEventListener('click', () => createFolderModal.style.display = 'none');
     uploadStartBtn.addEventListener('click', uploadFiles);
     uploadCancelBtn.addEventListener('click', () => uploadFilesModal.style.display = 'none');
+
+    // Advanced feature event listeners
+    if (tagsManageBtn) tagsManageBtn.addEventListener('click', showTagsManager);
+    if (statsBtn) statsBtn.addEventListener('click', showStats);
+    if (trashBtn) trashBtn.addEventListener('click', showTrash);
+    if (sortSelect) sortSelect.addEventListener('change', () => { currentSort = sortSelect.value; localStorage.setItem('videoLibrarySort', currentSort); refreshDisplay(); });
+    if (filterFavorites) filterFavorites.addEventListener('change', refreshDisplay);
+    if (filterUnseen) filterUnseen.addEventListener('change', refreshDisplay);
+    if (filterType) filterType.addEventListener('change', refreshDisplay);
+    if (clearFiltersBtn) clearFiltersBtn.addEventListener('click', clearAllFilters);
+    if (playAllBtn) playAllBtn.addEventListener('click', playAll);
+    if (addAllQueueBtn) addAllQueueBtn.addEventListener('click', addAllToQueue);
+    if (playerFavBtn) playerFavBtn.addEventListener('click', toggleCurrentVideoFavorite);
+    if (batchMoveBtn) batchMoveBtn.addEventListener('click', showFolderPicker);
+    if (batchTagBtn) batchTagBtn.addEventListener('click', showBatchTagModal);
+    if (batchRateBtn) batchRateBtn.addEventListener('click', showBatchRateModal);
+    if (batchFavBtn) batchFavBtn.addEventListener('click', batchToggleFavorite);
+    if (selectAllBtn) selectAllBtn.addEventListener('click', selectAllFiles);
+
+    // Set initial sort value
+    if (sortSelect) sortSelect.value = currentSort;
+
+    // Load initial data
+    loadAllTags();
+    updateTrashBadge();
 
     // Keyboard shortcuts
     document.addEventListener('keydown', handleKeyboard);
@@ -372,6 +429,9 @@ function showLogin() {
 function showApp() {
     loginScreen.style.display = 'none';
     app.style.display = 'flex';
+    loadFavorites();
+    loadAllTags();
+    updateTrashBadge();
 }
 
 // Load directory contents
@@ -404,7 +464,10 @@ async function loadDirectory(path) {
         thumbnailsEnabled = data.thumbnailsEnabled || false;
 
         displayFolders(data.folders || []);
-        displayVideos(allFiles);
+        const filtered = applyFilters(allFiles);
+        const sorted = sortFiles(filtered);
+        displayVideos(sorted);
+        if (contentActions) contentActions.style.display = allFiles.length > 0 ? 'flex' : 'none';
 
         statusMessage.textContent = 'Ready';
         updateFileCount(allFiles.length);
@@ -470,8 +533,8 @@ Modified: ${formatDate(file.modified)}
 Path: ${file.path}`;
 
         return `
-        <div class="video-item ${selectionClass} ${selectedClass}" 
-             data-path="${escapeHtml(file.path)}" 
+        <div class="video-item ${selectionClass} ${selectedClass}"
+             data-path="${escapeHtml(file.path)}"
              data-type="${file.type || 'video'}"
              title="${escapeHtml(tooltip)}">
           ${selectionMode ? `<input type="checkbox" class="video-checkbox" ${isSelected ? 'checked' : ''}>` : ''}
@@ -481,8 +544,11 @@ Path: ${file.path}`;
             <div class="video-meta">
               ${formatFileSize(file.size)} • ${formatDate(file.modified)}
             </div>
+            ${file.tags && file.tags.length ? `<div class="video-tags">${file.tags.map(t => `<span class="tag-chip" style="background:${t.color}">${escapeHtml(t.name)}</span>`).join('')}</div>` : ''}
             ${showFolderPath && file.folder ? `<div class="video-folder-path">📁 ${escapeHtml(file.folder)}</div>` : ''}
           </div>
+          ${file.favorite ? '<span class="video-fav-icon is-fav">♥</span>' : ''}
+          ${file.progress !== null && file.progress !== undefined && file.progress > 0 && file.progress < 100 ? `<div class="video-progress-bar" style="width:${file.progress}%"></div>` : ''}
         </div>
       `;
     }).join('');
@@ -890,10 +956,20 @@ function updateSelectionUI() {
         selectionModeBtn.textContent = '✕ Cancel';
         selectionModeBtn.classList.add('active');
         addToAlbumBtn.style.display = 'block';
+        if (batchMoveBtn) batchMoveBtn.style.display = 'block';
+        if (batchTagBtn) batchTagBtn.style.display = 'block';
+        if (batchRateBtn) batchRateBtn.style.display = 'block';
+        if (batchFavBtn) batchFavBtn.style.display = 'block';
+        if (selectAllBtn) selectAllBtn.style.display = 'block';
     } else {
         selectionModeBtn.textContent = '☑ Select';
         selectionModeBtn.classList.remove('active');
         addToAlbumBtn.style.display = 'none';
+        if (batchMoveBtn) batchMoveBtn.style.display = 'none';
+        if (batchTagBtn) batchTagBtn.style.display = 'none';
+        if (batchRateBtn) batchRateBtn.style.display = 'none';
+        if (batchFavBtn) batchFavBtn.style.display = 'none';
+        if (selectAllBtn) selectAllBtn.style.display = 'none';
     }
     updateDeleteButton();
 }
@@ -1760,6 +1836,204 @@ async function uploadFiles() {
         alert('Failed to upload files');
         uploadStartBtn.disabled = false;
     }
+}
+
+// ===== TAGS MANAGEMENT =====
+
+async function loadAllTags() {
+    try {
+        const res = await fetch('/api/tags', { credentials: 'same-origin' });
+        if (res.ok) {
+            const data = await res.json();
+            allTags = data.tags;
+            renderFilterTags();
+        }
+    } catch (e) { console.error('Load tags error:', e); }
+}
+
+function renderFilterTags() {
+    if (!filterTagsContainer) return;
+    filterTagsContainer.innerHTML = allTags.map(tag =>
+        `<span class="tag-chip filter-tag ${filterTags.has(tag.id) ? 'active' : ''}" style="background:${tag.color}" data-tag-id="${tag.id}">${escapeHtml(tag.name)}</span>`
+    ).join('');
+    filterTagsContainer.querySelectorAll('.filter-tag').forEach(el => {
+        el.addEventListener('click', () => {
+            const tagId = parseInt(el.dataset.tagId);
+            if (filterTags.has(tagId)) filterTags.delete(tagId);
+            else filterTags.add(tagId);
+            el.classList.toggle('active');
+            refreshDisplay();
+        });
+    });
+}
+
+async function showTagsManager() {
+    document.getElementById('tags-modal').style.display = 'flex';
+    await loadAllTags();
+    renderTagsList();
+    document.getElementById('tags-modal-close').onclick = () => document.getElementById('tags-modal').style.display = 'none';
+    document.getElementById('create-tag-btn').onclick = async () => {
+        const name = document.getElementById('new-tag-name').value.trim();
+        const color = document.getElementById('new-tag-color').value;
+        if (!name) return;
+        await fetch('/api/tags', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ name, color }) });
+        document.getElementById('new-tag-name').value = '';
+        await loadAllTags();
+        renderTagsList();
+    };
+}
+
+function renderTagsList() {
+    const list = document.getElementById('tags-list');
+    list.innerHTML = allTags.map(tag =>
+        `<div class="tag-list-item">
+            <span class="tag-chip" style="background:${tag.color}">${escapeHtml(tag.name)}</span>
+            <button class="btn-secondary btn-sm tag-delete-btn" data-id="${tag.id}">Delete</button>
+        </div>`
+    ).join('') || '<div class="empty-state">No tags yet</div>';
+    list.querySelectorAll('.tag-delete-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            await fetch(`/api/tags/${btn.dataset.id}`, { method: 'DELETE', credentials: 'same-origin' });
+            await loadAllTags();
+            renderTagsList();
+        });
+    });
+}
+
+// ===== FAVORITES =====
+
+async function toggleFavorite(videoPath) {
+    try {
+        const res = await fetch('/api/favorite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ video_path: videoPath }) });
+        const data = await res.json();
+        if (data.favorited) favoritesSet.add(videoPath);
+        else favoritesSet.delete(videoPath);
+        return data.favorited;
+    } catch (e) { console.error('Favorite error:', e); return false; }
+}
+
+async function toggleCurrentVideoFavorite() {
+    if (!currentVideoPath) return;
+    const isFav = await toggleFavorite(currentVideoPath);
+    playerFavBtn.textContent = isFav ? '♥' : '♡';
+    playerFavBtn.classList.toggle('favorited', isFav);
+    refreshDisplay();
+}
+
+async function loadFavorites() {
+    try {
+        const res = await fetch('/api/favorites', { credentials: 'same-origin' });
+        if (res.ok) {
+            const data = await res.json();
+            favoritesSet = new Set(data.favorites);
+        }
+    } catch (e) { console.error('Load favorites error:', e); }
+}
+
+// ===== SORT & FILTER =====
+
+function sortFiles(files) {
+    const sorted = [...files];
+    switch (currentSort) {
+        case 'name-asc': sorted.sort((a, b) => a.name.localeCompare(b.name)); break;
+        case 'name-desc': sorted.sort((a, b) => b.name.localeCompare(a.name)); break;
+        case 'date-desc': sorted.sort((a, b) => new Date(b.modified) - new Date(a.modified)); break;
+        case 'date-asc': sorted.sort((a, b) => new Date(a.modified) - new Date(b.modified)); break;
+        case 'size-desc': sorted.sort((a, b) => b.size - a.size); break;
+        case 'size-asc': sorted.sort((a, b) => a.size - b.size); break;
+        case 'rating-desc': sorted.sort((a, b) => (b.rating || 0) - (a.rating || 0)); break;
+        case 'rating-asc': sorted.sort((a, b) => (a.rating || 0) - (b.rating || 0)); break;
+    }
+    return sorted;
+}
+
+function applyFilters(files) {
+    let filtered = files;
+    if (filterFavorites && filterFavorites.checked) {
+        filtered = filtered.filter(f => f.favorite);
+    }
+    if (filterUnseen && filterUnseen.checked) {
+        filtered = filtered.filter(f => !f.seen);
+    }
+    if (filterType && filterType.value) {
+        filtered = filtered.filter(f => f.type === filterType.value);
+    }
+    if (filterTags.size > 0) {
+        filtered = filtered.filter(f => {
+            if (!f.tags || f.tags.length === 0) return false;
+            const fileTagIds = new Set(f.tags.map(t => t.id));
+            for (const tagId of filterTags) {
+                if (!fileTagIds.has(tagId)) return false;
+            }
+            return true;
+        });
+    }
+    return filtered;
+}
+
+function refreshDisplay() {
+    const filtered = applyFilters(allFiles);
+    const sorted = sortFiles(filtered);
+    displayVideos(sorted, isSearchMode);
+}
+
+function clearAllFilters() {
+    if (filterFavorites) filterFavorites.checked = false;
+    if (filterUnseen) filterUnseen.checked = false;
+    if (filterType) filterType.value = '';
+    filterTags.clear();
+    document.getElementById('rating-filter').value = '0';
+    renderFilterTags();
+    refreshDisplay();
+}
+
+function selectAllFiles() {
+    const displayed = document.querySelectorAll('.video-item');
+    if (selectedFiles.size === displayed.length) {
+        selectedFiles.clear();
+    } else {
+        displayed.forEach(item => selectedFiles.add(item.dataset.path));
+    }
+    updateDeleteButton();
+    updateCheckboxes();
+}
+
+// ===== PLACEHOLDER FUNCTIONS (Implemented in Task 10) =====
+
+function showStats() {
+    console.log('Stats feature - implemented in Task 10');
+}
+
+function showTrash() {
+    console.log('Trash feature - implemented in Task 10');
+}
+
+function updateTrashBadge() {
+    // Implemented in Task 10
+}
+
+function playAll() {
+    console.log('Play All feature - implemented in Task 10');
+}
+
+function addAllToQueue() {
+    console.log('Add All to Queue feature - implemented in Task 10');
+}
+
+function showFolderPicker() {
+    console.log('Folder Picker feature - implemented in Task 10');
+}
+
+function showBatchTagModal() {
+    console.log('Batch Tag feature - implemented in Task 10');
+}
+
+function showBatchRateModal() {
+    console.log('Batch Rate feature - implemented in Task 10');
+}
+
+function batchToggleFavorite() {
+    console.log('Batch Favorite feature - implemented in Task 10');
 }
 
 // Initialize on load
